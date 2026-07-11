@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ui-audit-pro"
@@ -38,10 +38,6 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
 ]
-
-[project.scripts]
-ui-audit-pro = "scripts.audit:main"
-ui-audit-pro-install = "scripts.install:main"
 
 [project.urls]
 Homepage = "https://github.com/Pranjal-Upadhyay/ui-audit-pro"
