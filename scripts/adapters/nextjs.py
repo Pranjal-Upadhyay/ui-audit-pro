@@ -115,7 +115,8 @@ class NextJSAdapter(BaseAdapter):
 
                 # Find exported HTTP methods
                 for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
-                    if re.search(rf"export\s+(?:async\s+)?function\s+{method}", content):
+                    match = re.search(rf"export\s+(?:async\s+)?function\s+{method}", content)
+                    if match:
                         rel_path = str(route_file.relative_to(self.codebase))
                         # Derive endpoint from file path
                         endpoint = "/" + str(route_file.relative_to(api_dir.parent)).replace("/route.ts", "").replace("/route.js", "")
@@ -123,7 +124,7 @@ class NextJSAdapter(BaseAdapter):
                             endpoint=endpoint,
                             method=method,
                             file=rel_path,
-                            line=content.find(f"export") + 1,
+                            line=content[:match.start()].count("\n") + 1,
                             framework="nextjs-api",
                         ))
 

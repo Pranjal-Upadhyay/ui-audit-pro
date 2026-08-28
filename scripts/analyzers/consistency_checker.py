@@ -27,14 +27,19 @@ class ConsistencyChecker:
         (derived from text content + tag) rather than by CSS class names.
         Two buttons with text 'Add to Cart' on different pages are grouped
         together even if they have different class names.
+
+        Works in two modes:
+        - Layer 1 (live URL): reads from dom_snapshots with computed styles.
+        - Layer 2 (code-only): parses inline_styles from StyleAnalyzer output,
+          building pseudo-elements grouped by source file (route proxy).
         """
         findings = []
         dom_snapshots = data.get("dom_snapshots", {})
 
         # Collect all interactive elements with their semantic role
-        # Semantic role = normalized text content + tag (not CSS class)
         role_groups = defaultdict(list)
 
+        # --- Layer 1: Live DOM snapshots ---
         for url, snapshot in dom_snapshots.items():
             if not isinstance(snapshot, dict):
                 continue
@@ -47,17 +52,13 @@ class ConsistencyChecker:
                 if not text or tag not in ("button", "a", "input", "select", "textarea"):
                     continue
 
-                # Infer semantic role from text content + tag
-                # Normalize: 'Add to Cart' and 'add to cart' -> 'button:add to cart'
                 semantic_role = f"{tag}:{text}"
-
-                # Create style signature for comparison
                 if tag in ("button", "a"):
                     style_sig = self._style_signature(styles_dict, [
                         "background-color", "border-radius", "padding",
                         "font-size", "font-weight", "color",
                     ])
-                elif tag in ("input", "select", "textarea"):
+                else:
                     style_sig = self._style_signature(styles_dict, [
                         "border", "border-radius", "padding", "font-size",
                     ])
@@ -70,18 +71,55 @@ class ConsistencyChecker:
                     "text": text,
                 })
 
+        # --- Layer 2: Code-only fallback — parse inline style objects ---
+        if not dom_snapshots:
+            inline_styles = data.get("computed_styles", {}).get("inline_styles", [])
+            for entry in inline_styles:
+                file_path = entry.get("file", "source")
+                raw_style = entry.get("style", "")
+
+                # Extract key: value pairs from React inline style strings
+                parsed = self._parse_inline_style_string(raw_style)
+
+                # Heuristic: classify as button if it has button-like markers (cursor: pointer, or font-weight + padding + bg/color)
+                # and filter out full-screen modal overlays or alert banner container boxes
+                bg_val = str(parsed.get("backgroundColor", parsed.get("background", "")))
+                is_overlay = "rgba(0,0,0" in bg_val or "fixed" in str(parsed.get("position", "")) or "fixed" in raw_style
+                is_button_like = ("cursor" in parsed or ("padding" in parsed and "fontWeight" in parsed and ("backgroundColor" in parsed or "color" in parsed))) and not is_overlay
+
+                if is_button_like:
+                    # Normalise camelCase -> kebab-case for signature
+                    normalized = {
+                        "background-color": parsed.get("backgroundColor", parsed.get("background", "")),
+                        "border-radius": parsed.get("borderRadius", ""),
+                        "padding": parsed.get("padding", ""),
+                        "font-size": parsed.get("fontSize", ""),
+                        "font-weight": str(parsed.get("fontWeight", "")),
+                        "color": parsed.get("color", ""),
+                    }
+                    style_sig = self._style_signature(normalized, list(normalized.keys()))
+                    # Use file as a proxy for "route"
+                    route_proxy = file_path
+                    semantic_role = "button:primary-cta"
+                    role_groups[semantic_role].append({
+                        "url": route_proxy,
+                        "element": {"tag": "button", "text": "primary-cta"},
+                        "style_sig": style_sig,
+                        "tag": "button",
+                        "text": "primary-cta",
+                        "raw_style": raw_style,
+                    })
+
         # For each semantic role, check if all instances share the same style
         for role, instances in role_groups.items():
             if len(instances) < 2:
-                continue  # Need at least 2 to compare
+                continue
 
-            # Group by style signature
             sig_groups = defaultdict(list)
             for inst in instances:
                 sig_groups[inst["style_sig"]].append(inst)
 
             if len(sig_groups) > 1:
-                # Multiple different styles for the same semantic role!
                 dominant_sig = max(sig_groups.keys(), key=lambda s: len(sig_groups[s]))
                 dominant_count = len(sig_groups[dominant_sig])
 
@@ -89,7 +127,6 @@ class ConsistencyChecker:
                     if sig == dominant_sig:
                         continue
 
-                    # Collect all locations where the inconsistent variant appears
                     locations = [inst["url"] for inst in variant_instances]
 
                     findings.append({
@@ -125,14 +162,19 @@ class ConsistencyChecker:
         return findings
 
     def _check_spacing_rhythm(self, data: Dict, codebase=None) -> List[Dict]:
-        """Check spacing follows a consistent grid."""
+        """Check spacing follows a consistent grid.
+
+        Works in two modes:
+        - CSS files: regex over raw CSS for margin/padding px values.
+        - Inline styles (code-only): parses React inline style objects from
+          StyleAnalyzer's inline_styles list, extracting numeric padding/margin.
+        """
         findings = []
         styles = data.get("computed_styles", {})
-
-        # Analyze CSS files for spacing values
-        css_files = styles.get("css_files", {})
         non_grid_values = set()
 
+        # --- CSS file analysis ---
+        css_files = styles.get("css_files", {})
         for file_path, content in css_files.items():
             for match in re.finditer(
                 r"(?:margin|padding)(?:-(?:top|right|bottom|left))?:\s*([\d.]+)px",
@@ -141,6 +183,37 @@ class ConsistencyChecker:
                 value = float(match.group(1))
                 if value % 4 != 0:
                     non_grid_values.add(value)
+
+        # --- Inline styles analysis (code-only mode) ---
+        inline_styles = styles.get("inline_styles", [])
+        for entry in inline_styles:
+            raw = entry.get("style", "")
+            parsed = self._parse_inline_style_string(raw)
+            for prop in ("padding", "margin", "paddingTop", "paddingRight",
+                          "paddingBottom", "paddingLeft", "marginTop",
+                          "marginRight", "marginBottom", "marginLeft"):
+                val = parsed.get(prop, "")
+                if val is None:
+                    continue
+                val_str = str(val).strip()
+                # Handle shorthand strings like '13px 17px'
+                for part in val_str.replace("'", "").replace('"', "").split():
+                    part = part.rstrip(",")
+                    if part.endswith("px"):
+                        try:
+                            num = float(part[:-2])
+                            if num % 4 != 0:
+                                non_grid_values.add(num)
+                        except ValueError:
+                            pass
+                    elif isinstance(val, (int, float)):
+                        # Numeric values (React uses unitless px by convention)
+                        try:
+                            num = float(val)
+                            if num > 0 and num % 4 != 0:
+                                non_grid_values.add(num)
+                        except (ValueError, TypeError):
+                            pass
 
         if non_grid_values:
             findings.append({
@@ -158,24 +231,44 @@ class ConsistencyChecker:
         return findings
 
     def _check_typography_scale(self, data: Dict, codebase=None) -> List[Dict]:
-        """Check typography follows a consistent scale."""
+        """Check typography follows a consistent scale.
+
+        Works in two modes:
+        - CSS files: regex over raw CSS for font-size declarations.
+        - Inline styles (code-only): parses fontSize from React inline style objects.
+        """
         findings = []
         styles = data.get("computed_styles", {})
-
-        css_files = styles.get("css_files", {})
         font_sizes = set()
 
+        # --- CSS file analysis ---
+        css_files = styles.get("css_files", {})
         for file_path, content in css_files.items():
             for match in re.finditer(r"font-size:\s*([\d.]+)(?:px|rem|em)", content):
                 try:
                     value = float(match.group(1))
                     if "rem" in match.group(0) or "em" in match.group(0):
-                        value *= 16  # Convert to px
+                        value *= 16
                     font_sizes.add(value)
                 except ValueError:
                     continue
 
-        # Check for one-off sizes
+        # --- Inline styles analysis (code-only mode) ---
+        inline_styles = styles.get("inline_styles", [])
+        for entry in inline_styles:
+            raw = entry.get("style", "")
+            parsed = self._parse_inline_style_string(raw)
+            fs = parsed.get("fontSize", "")
+            if fs:
+                fs_str = str(fs).strip().rstrip(",").replace("'", "").replace('"', "")
+                if fs_str.endswith("px"):
+                    try:
+                        font_sizes.add(float(fs_str[:-2]))
+                    except ValueError:
+                        pass
+                elif isinstance(fs, (int, float)):
+                    font_sizes.add(float(fs))
+
         standard_sizes = {10, 12, 14, 16, 18, 20, 24, 30, 36, 48, 60, 72, 96}
         one_offs = font_sizes - standard_sizes
 
@@ -784,9 +877,179 @@ class ConsistencyChecker:
 
         return findings
 
+    def _check_ai_design_tropes(self, data: Dict, codebase=None) -> List[Dict]:
+        """Check for common AI design tropes and brand originality markers (Category 24).
+
+        Flags uncustomized AI starter defaults:
+        - Default indigo/slate color palettes (#6366f1 / indigo-500)
+        - Font monoculture (100% Inter/Geist without brand headline pairing)
+        - AI marketing copy clichés ("supercharge your workflow", "seamless integration", etc.)
+        - Excessive em-dashes (—) in UI copy
+        - Overuse of radial blur overlays & translucent glassmorphism
+        """
+        findings = []
+        styles = data.get("computed_styles", {})
+        dom_snapshots = data.get("dom_snapshots", {})
+        ai_tropes = styles.get("ai_tropes", {})
+
+        # 1. Uncustomized Palette Check (Indigo-500 / Slate defaults)
+        colors = set([str(c).lower() for c in styles.get("colors", [])])
+        ai_default_accents = {"#6366f1", "#8b5cf6", "#4f46e5", "#3b82f6", "rgb(99, 102, 241)", "rgba(99, 102, 241)"}
+        ai_default_surfaces = {"#0f172a", "#090d16", "#020617", "#1e293b"}
+
+        accent_matches = colors & ai_default_accents
+        surface_matches = colors & ai_default_surfaces
+
+        if accent_matches and surface_matches:
+            findings.append({
+                "id": "ai-trope-default-palette",
+                "title": "Uncustomized AI default color palette detected",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "medium",
+                "description": f"Found default AI template colors: accents {accent_matches}, dark slate surfaces {surface_matches}. Overuse of standard indigo-500/slate causes visual homogenization across AI-generated sites.",
+                "evidence": f"Accent colors: {list(accent_matches)}, Slate surfaces: {list(surface_matches)}",
+                "recommended_fix": "Define custom brand CSS variables for primary/secondary colors rather than relying on default Tailwind indigo/slate tokens.",
+                "effort": "small",
+            })
+
+        # 2. Font Monoculture Check (100% Inter/Geist with no custom header pairing)
+        font_families = set([str(f).lower() for f in styles.get("font_families", [])])
+        is_default_font = any("inter" in f or "geist" in f or "system-ui" in f for f in font_families)
+        if font_families and is_default_font and len(font_families) == 1:
+            findings.append({
+                "id": "ai-trope-font-monoculture",
+                "title": "Generic font monoculture (Inter/Geist system default)",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": "The entire UI uses a single default font family without a distinct brand heading font.",
+                "evidence": f"Font families found: {list(font_families)}",
+                "recommended_fix": "Pair body sans-serif text with a distinct display font for H1/H2 headlines.",
+                "effort": "small",
+            })
+
+        # 3. AI Marketing Copy Clichés & Em-Dash Overuse
+        cliche_phrases = [
+            "supercharge your", "seamless integration", "elevate your",
+            "unlock the power", "game-changer", "tapestry of", "paradigm shift",
+            "cutting-edge solution", "revolutionize your"
+        ]
+        found_cliches = []
+        em_dash_count = 0
+
+        # Scan text in DOM snapshots or codebase
+        text_samples = []
+        for url, snapshot in dom_snapshots.items():
+            if isinstance(snapshot, dict):
+                for el in snapshot.get("text_elements", []):
+                    txt = el.get("text", "")
+                    if txt:
+                        text_samples.append(txt)
+
+        # Also scan inline text in codebase if provided
+        if codebase and not text_samples:
+            for ext in [".tsx", ".jsx", ".ts", ".js", ".html"]:
+                for f in codebase.rglob(f"*{ext}"):
+                    if ".git" in str(f) or "node_modules" in str(f) or ".next" in str(f):
+                        continue
+                    try:
+                        c = f.read_text(encoding="utf-8")
+                        text_samples.append(c)
+                    except (UnicodeDecodeError, OSError):
+                        continue
+
+        for txt in text_samples:
+            em_dash_count += txt.count("—")
+            txt_lower = txt.lower()
+            for phrase in cliche_phrases:
+                if phrase in txt_lower:
+                    found_cliches.append(phrase)
+
+        if found_cliches:
+            unique_cliches = sorted(set(found_cliches))
+            findings.append({
+                "id": "ai-trope-microcopy-cliches",
+                "title": "AI copywriting clichés detected in UI text",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found {len(found_cliches)} instance(s) of generic AI marketing copy: {unique_cliches}",
+                "evidence": f"Clichés found: {unique_cliches}",
+                "recommended_fix": "Rewrite headline microcopy to focus on specific user outcomes rather than generic AI marketing buzzwords.",
+                "effort": "trivial",
+            })
+
+        if em_dash_count > 5:
+            findings.append({
+                "id": "ai-trope-em-dash-overuse",
+                "title": "Excessive em-dash (—) usage in UI text",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found {em_dash_count} em-dashes across UI microcopy, a common hallmark of raw LLM text generation.",
+                "evidence": f"Em-dash count: {em_dash_count}",
+                "recommended_fix": "Vary sentence structure and split compound sentences to sound more natural.",
+                "effort": "trivial",
+            })
+
+        # 4. Overused Visual Tropes (Blur Overlays, Glassmorphism)
+        blur_overlays = ai_tropes.get("blur_overlays", [])
+        glass_count = ai_tropes.get("glassmorphism_count", 0)
+
+        if len(blur_overlays) > 2:
+            findings.append({
+                "id": "ai-trope-blur-overlays",
+                "title": "Overuse of radial blur glow overlays (blur-3xl)",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found radial background blur overlays across {len(blur_overlays)} files: {blur_overlays[:5]}",
+                "evidence": f"Affected files: {blur_overlays[:5]}",
+                "recommended_fix": "Use purposeful lighting and contrast instead of decorative background glow blobs.",
+                "effort": "small",
+            })
+
+        if glass_count > 5:
+            findings.append({
+                "id": "ai-trope-glassmorphism-overuse",
+                "title": "Overuse of glassmorphism (backdrop-blur)",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found {glass_count} instances of backdrop-blur glass container cards.",
+                "evidence": f"Glassmorphism instances: {glass_count}",
+                "recommended_fix": "Use solid surface colors with subtle borders instead of applying glass blur to every card.",
+                "effort": "small",
+            })
+
+        return findings
+
     def _style_signature(self, styles: Dict, properties: list) -> str:
         """Create a signature string from style properties for comparison."""
         values = []
         for prop in properties:
             values.append(str(styles.get(prop, "unset")))
         return "|".join(values)
+
+    def _parse_inline_style_string(self, raw: str) -> Dict:
+        """Parse a React inline style string into a key->value dict.
+
+        Handles patterns like:
+          "backgroundColor: '#0070f3', borderRadius: '6px', padding: '13px 17px'"
+          "padding: 24"
+        Returns a dict of camelCase property names to string values.
+        """
+        result = {}
+        if not raw:
+            return result
+        # Match key: value pairs (value may be quoted string or bare number)
+        for match in re.finditer(
+            r"(\w+)\s*:\s*(?:'([^']*)'|\"([^\"]*)\"|([-\d.]+))",
+            raw,
+        ):
+            key = match.group(1)
+            # Pick whichever capture group matched
+            value = match.group(2) or match.group(3) or match.group(4) or ""
+            if match.group(4):  # bare number
+                try:
+                    result[key] = float(match.group(4))
+                except ValueError:
+                    result[key] = value
+            else:
+                result[key] = value
+        return result

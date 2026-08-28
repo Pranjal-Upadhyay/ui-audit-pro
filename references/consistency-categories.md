@@ -1,6 +1,6 @@
 # UI/UX Consistency Categories
 
-This document defines all 23 consistency categories that the audit checks.
+This document defines all 24 consistency categories that the audit checks.
 
 ## Part 1: UI/UX Consistency Checks
 

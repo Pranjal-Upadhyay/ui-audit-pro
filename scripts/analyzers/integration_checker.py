@@ -177,14 +177,38 @@ class IntegrationChecker:
                 if file_path:
                     files_to_check.add((file_path, call.get("line", 0), call.get("endpoint", "")))
 
-            # Also discover API route handler files via adapter if available
+            # Also discover API call sites via any available adapter (framework-agnostic)
             try:
-                from adapters.nextjs import NextJSAdapter
-                adapter = NextJSAdapter(str(codebase))
-                for call in adapter.find_api_call_sites():
-                    file_path = call.file
-                    if file_path:
-                        files_to_check.add((file_path, call.line, call.endpoint))
+                import importlib
+                import pkgutil
+                import sys
+                from pathlib import Path as _Path
+
+                # Locate the adapters package relative to this file
+                _adapters_dir = _Path(__file__).parent.parent / "adapters"
+                if _adapters_dir.exists():
+                    for _mod_info in pkgutil.iter_modules([str(_adapters_dir)]):
+                        if _mod_info.name == "base":
+                            continue
+                        try:
+                            _mod = importlib.import_module(f"adapters.{_mod_info.name}")
+                            # Convention: each adapter module exports a class whose name ends in 'Adapter'
+                            _adapter_cls = next(
+                                (
+                                    v for k, v in vars(_mod).items()
+                                    if k.endswith("Adapter") and k != "BaseAdapter" and isinstance(v, type)
+                                ),
+                                None,
+                            )
+                            if _adapter_cls is None:
+                                continue
+                            _adapter = _adapter_cls(str(codebase))
+                            for call in _adapter.find_api_call_sites():
+                                file_path = call.file
+                                if file_path:
+                                    files_to_check.add((file_path, call.line, call.endpoint))
+                        except Exception:
+                            continue
             except Exception:
                 pass
 
@@ -280,6 +304,10 @@ class IntegrationChecker:
         # Source-level analysis: check for API calls without error handling
         if codebase and api_calls:
             for call in api_calls:
+                # Skip backend endpoint declarations (e.g. nextjs-api, express-route), only check client fetch call sites
+                if call.get("framework", "").endswith("-api") or call.get("framework", "").endswith("-route"):
+                    continue
+
                 file_path = call.get("file", "")
                 line = call.get("line", 0)
                 if file_path:

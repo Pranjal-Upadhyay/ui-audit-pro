@@ -176,18 +176,26 @@ class UIAuditEngine:
         if self.live_url:
             print(f"  Crawling live instance: {self.live_url}")
             live_routes = self.screenshot_capture.crawl_routes(self.live_url)
+            existing_paths = {r.get("path", "").rstrip("/") for r in result["routes"]}
             for route in live_routes:
                 url = route if isinstance(route, str) else route.get("url", "")
-                if url and not any(r.get("path") == url or r.get("path") == url for r in result["routes"]):
+                if not url:
+                    continue
+                # Normalize: strip the live_url prefix to get the path for comparison
+                path = url
+                if self.live_url and url.startswith(self.live_url):
+                    path = url[len(self.live_url):] or "/"
+                if path.rstrip("/") not in existing_paths:
                     result["routes"].append({"path": url, "file": None, "framework": "browser-crawl"})
+                    existing_paths.add(path.rstrip("/"))
 
-        # Deduplicate routes by (path, framework) tuple
-        seen = set()
+        # Deduplicate routes by normalised path (ignore which adapter/crawler found it)
+        seen_paths = set()
         unique_routes = []
         for r in result["routes"]:
-            key = (r.get("path", ""), r.get("framework", ""))
-            if key not in seen:
-                seen.add(key)
+            path_key = r.get("path", "").rstrip("/") or "/"
+            if path_key not in seen_paths:
+                seen_paths.add(path_key)
                 unique_routes.append(r)
         result["routes"] = unique_routes
 

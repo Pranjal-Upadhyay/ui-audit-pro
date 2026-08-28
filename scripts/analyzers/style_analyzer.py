@@ -85,6 +85,12 @@ class StyleAnalyzer:
             "shadows": set(),
             "transitions": set(),
             "breakpoints": set(),
+            "ai_tropes": {
+                "blur_overlays": [],
+                "glassmorphism_count": 0,
+                "ai_pill_badges": [],
+                "ai_gradients": [],
+            },
         }
 
         # Scan CSS files
@@ -193,3 +199,22 @@ class StyleAnalyzer:
                 "file": file_path,
                 "css": match.group(1)[:200],
             })
+
+        # AI Tropes Detection in class names and content
+        ai_tropes = styles.get("ai_tropes", {})
+        # 1. Radial blur overlay blobs (blur-3xl, blur-2xl)
+        if re.search(r'\bblur-(?:3xl|2xl)\b', js_content):
+            ai_tropes["blur_overlays"].append(file_path)
+
+        # 2. Glassmorphism overuse (backdrop-blur + border-white/10 or border-black/10)
+        glass_matches = len(re.findall(r'\bbackdrop-blur(?:-[a-z0-9]+)?\b', js_content))
+        if glass_matches > 0:
+            ai_tropes["glassmorphism_count"] = ai_tropes.get("glassmorphism_count", 0) + glass_matches
+
+        # 3. AI Pill Badges (rounded-full + border + text-xs badge pattern above title)
+        if re.search(r'rounded-full\s+border.*text-xs.*(?:✨|🚀|Introducing|Powered|New|v\d+)', js_content, re.IGNORECASE):
+            ai_tropes["ai_pill_badges"].append(file_path)
+
+        # 4. Purple/Cyan/Indigo gradients
+        if re.search(r'from-(?:purple|indigo|violet|cyan)-(?:400|500|600)\s+to-(?:pink|purple|indigo|cyan)-(?:500|600)', js_content):
+            ai_tropes["ai_gradients"].append(file_path)

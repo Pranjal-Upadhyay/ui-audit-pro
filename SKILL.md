@@ -1,6 +1,6 @@
 ---
 name: ui-audit-pro
-description: "Full-stack UI/UX consistency and frontend-backend integration audit. Two-layer architecture: Layer 1 (browser-level, framework-agnostic) + Layer 2 (source-level, pluggable adapters). Auto-detects stack. 23 visual/behavioral categories + 13 integration checks. Generates severity-ranked reports with evidence."
+description: "Full-stack UI/UX consistency, brand originality, and frontend-backend integration audit. Two-layer architecture: Layer 1 (browser-level, framework-agnostic) + Layer 2 (source-level, pluggable adapters). Auto-detects stack. 24 visual/behavioral categories (including AI design tropes detection) + 13 integration checks. Generates severity-ranked reports with evidence."
 ---
 
 # UI Audit Pro — Consistency & Integration Audit Skill
@@ -11,7 +11,7 @@ Two-layer audit skill that performs full UI/UX visual/behavioral consistency che
 
 ### Layer 1: Runtime/Browser-Level Checks (Framework-Agnostic)
 Everything involving **rendered output** — screenshots, computed styles, DOM structure, network requests/responses, interaction behavior — is done via browser automation (Playwright) against the actual running app. This layer does NOT need to know whether the app is React, Next.js, Vue, Svelte, or raw HTML. It covers:
-- All 23 UI/UX consistency categories
+- All 24 UI/UX consistency categories (including AI design tropes detection)
 - All 13 frontend-backend integration checks (network layer)
 - **Works with zero source code** — can audit a live URL only
 

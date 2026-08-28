@@ -21,11 +21,11 @@
 
 ## What Is This?
 
-UI Audit Pro is a two-layer audit engine that detects visual inconsistencies and integration bugs across your web application. It runs **36 automated checks** — 23 UI/UX consistency categories and 13 frontend-to-backend integration checks.
+UI Audit Pro is a two-layer audit engine that detects visual inconsistencies, AI design slop, and integration bugs across your web application. It runs **37 automated checks** — 24 UI/UX consistency categories (including AI design tropes & brand originality detection) and 13 frontend-to-backend integration checks.
 
 **Layer 1 (Browser-Level):** Runs against a live URL via Playwright. Framework-agnostic — works with any web app. Captures screenshots, DOM snapshots, computed styles, and network traffic.
 
-**Layer 2 (Source-Level):** Reads your codebase directly using pluggable framework adapters. Pinpoints the exact file and line where issues originate. Auto-detects your stack.
+**Layer 2 (Source-Level):** Reads your codebase directly using pluggable framework adapters. Pinpoints the exact file and line where issues originate. Auto-detects your stack and parses inline React styles, Tailwind tokens, and CSS modules.
 
 ---
 
@@ -41,7 +41,9 @@ UI Audit Pro is a two-layer audit engine that detects visual inconsistencies and
 
 ## What It Checks
 
-**UI/UX Consistency (23 categories):** Visual identity, spacing rhythm, typography scale, icon consistency, interaction states, modal behavior, loading/empty/error states, form validation, microcopy, navigation, responsive breakpoints, accessibility, animation, layout integrity, truncation, color semantics, grammar correctness, pagination, notifications, role-based UI, dark mode, input affordance, print/PDF views.
+**UI/UX Consistency & Originality (24 categories):** 
+- **Brand & AI Tropes (Category 24)**: Detects uncustomized AI starter defaults ("AI slop") including indigo-500/slate palettes (`#6366f1`), Inter/Geist font monoculture, LLM marketing clichés ("supercharge your workflow", "seamless integration"), excessive em-dashes (`—`), and radial blur glow blobs (`blur-3xl`).
+- **Visual & Layout (Categories 1-23)**: Visual identity, spacing rhythm (4px/8px grid), typography scale, icon consistency, interaction states, modal behavior, loading/empty/error states, form validation, microcopy, navigation, responsive breakpoints, accessibility, animation, layout integrity, truncation, color semantics, grammar correctness, pagination, notifications, role-based UI, dark mode, input affordance, print/PDF views.
 
 **Integration (13 categories):** API contract drift, type mismatches, state wiring, unhandled promise rejections, race conditions, optimistic UI correctness, auth/session handling, latency/timeout behavior, pagination data, websocket sync, file upload/download edge cases, double-submit protection, timezone mismatches.
 
