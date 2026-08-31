@@ -274,3 +274,250 @@ class TestAIDesignTropes:
         findings = self.checker._check_ai_design_tropes(data)
         assert len(findings) == 0
 
+
+
+class TestCheckRegistration:
+    """Every implemented check must be reachable from the audit pipeline.
+
+    Guards against the class of bug where a checker method is written and
+    unit-tested but never added to the dispatch list, so it silently never
+    runs in production.
+    """
+
+    def _implemented(self, cls):
+        return {
+            name[len("_check_"):]
+            for name in dir(cls)
+            if name.startswith("_check_")
+        }
+
+    def test_every_consistency_check_is_dispatched(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        from audit import UI_CHECKS
+
+        registered = {check_id for _, check_id, _ in UI_CHECKS}
+        missing = self._implemented(ConsistencyChecker) - registered
+        assert not missing, f"Implemented but never dispatched: {sorted(missing)}"
+
+    def test_every_integration_check_is_dispatched(self):
+        from analyzers.integration_checker import IntegrationChecker
+        from audit import INTEGRATION_CHECKS
+
+        registered = {check_id for _, check_id, _ in INTEGRATION_CHECKS}
+        missing = self._implemented(IntegrationChecker) - registered
+        assert not missing, f"Implemented but never dispatched: {sorted(missing)}"
+
+    def test_every_dispatched_check_is_implemented(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        from analyzers.integration_checker import IntegrationChecker
+        from audit import UI_CHECKS, INTEGRATION_CHECKS
+
+        for checks, cls in ((UI_CHECKS, ConsistencyChecker), (INTEGRATION_CHECKS, IntegrationChecker)):
+            implemented = self._implemented(cls)
+            for _, check_id, _ in checks:
+                assert check_id in implemented, f"Dispatched but not implemented: {check_id}"
+
+    def test_every_check_declares_a_valid_layer(self):
+        from audit import UI_CHECKS, INTEGRATION_CHECKS
+
+        for _, check_id, requires in UI_CHECKS + INTEGRATION_CHECKS:
+            assert requires in ("source", "browser", "either"), (check_id, requires)
+
+
+class TestCoverageHonesty:
+    """Zero findings with incomplete coverage must never read as a pass."""
+
+    def _report(self, skipped, executed, findings=()):
+        from report_generator import ReportGenerator
+        return ReportGenerator(
+            findings=list(findings),
+            discovery={},
+            output_dir=Path("/tmp"),
+            coverage={
+                "capabilities": {"layer2_source": True, "layer1_browser": False},
+                "executed": [{"name": f"e{i}", "id": f"e{i}"} for i in range(executed)],
+                "skipped": [
+                    {"name": f"s{i}", "id": f"s{i}", "reason": "no browser"} for i in range(skipped)
+                ],
+            },
+        )
+
+    def test_zero_findings_with_skips_is_unknown_not_excellent(self):
+        gen = self._report(skipped=28, executed=9)
+        summary = gen._executive_summary({})
+        assert "UNKNOWN" in summary
+        assert "EXCELLENT" not in summary
+
+    def test_zero_findings_with_full_coverage_is_excellent(self):
+        gen = self._report(skipped=0, executed=37)
+        summary = gen._executive_summary({})
+        assert "EXCELLENT" in summary
+
+    def test_no_checks_executed_is_unknown(self):
+        gen = self._report(skipped=0, executed=0)
+        summary = gen._executive_summary({})
+        assert "UNKNOWN" in summary
+
+    def test_coverage_section_warns_about_skips(self):
+        gen = self._report(skipped=28, executed=9)
+        section = gen._coverage_section()
+        assert "28 check(s) did not run" in section
+        assert "not** a clean bill of" in section
+
+
+class TestRedaction:
+    def test_redacts_sensitive_keys_at_any_depth(self):
+        from capture.network_interceptor import redact, REDACTED
+
+        payload = {
+            "user": {"name": "ada", "api_key": "sk-live-123"},
+            "items": [{"authorization": "Bearer xyz", "id": 1}],
+            "accessToken": "abc",
+            "password": "hunter2",
+            "safe": "keep-me",
+        }
+        result = redact(payload)
+
+        assert result["user"]["api_key"] == REDACTED
+        assert result["items"][0]["authorization"] == REDACTED
+        assert result["accessToken"] == REDACTED
+        assert result["password"] == REDACTED
+        assert result["user"]["name"] == "ada"
+        assert result["safe"] == "keep-me"
+        assert result["items"][0]["id"] == 1
+
+    def test_original_payload_is_not_mutated(self):
+        from capture.network_interceptor import redact
+
+        payload = {"secret": "s"}
+        redact(payload)
+        assert payload["secret"] == "s"
+
+
+class TestInferShape:
+    def test_scalar_types(self):
+        from capture.network_interceptor import infer_shape
+
+        assert infer_shape({"a": 1, "b": 1.5, "c": "x", "d": True, "e": None}) == {
+            "a": "integer", "b": "number", "c": "string", "d": "boolean", "e": "null",
+        }
+
+    def test_arrays_are_capped_at_three_items(self):
+        from capture.network_interceptor import infer_shape
+
+        assert infer_shape([1, 2, 3, 4, 5]) == ["integer", "integer", "integer"]
+
+    def test_recursion_is_capped(self):
+        from capture.network_interceptor import infer_shape
+
+        deep = {"a": {"b": {"c": {"d": {"e": 1}}}}}
+        assert infer_shape(deep) == {"a": {"b": {"c": {"d": "..."}}}}
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def body(self):
+        return self._body
+
+
+class TestAttachBody:
+    def _interceptor(self, tmp_path):
+        from capture.network_interceptor import NetworkInterceptor
+
+        return NetworkInterceptor(tmp_path)
+
+    def test_captures_and_redacts_json_body(self, tmp_path):
+        ni = self._interceptor(tmp_path)
+        req = {}
+        body = json.dumps({"total": "42.00", "token": "leak"}).encode()
+        ni._attach_body(req, _FakeResponse(body), {"content-type": "application/json"})
+
+        assert req["response_body"]["total"] == "42.00"
+        assert req["response_body"]["token"] == "[REDACTED]"
+        assert req["response_shape"] == {"total": "string", "token": "string"}
+
+    def test_ignores_non_json_content_type(self, tmp_path):
+        ni = self._interceptor(tmp_path)
+        req = {}
+        ni._attach_body(req, _FakeResponse(b"<html>"), {"content-type": "text/html"})
+        assert "response_body" not in req
+
+    def test_marks_oversized_body_as_truncated(self, tmp_path):
+        from capture.network_interceptor import MAX_BODY_BYTES
+
+        ni = self._interceptor(tmp_path)
+        req = {}
+        huge = b"x" * (MAX_BODY_BYTES + 1)
+        ni._attach_body(req, _FakeResponse(huge), {"content-type": "application/json"})
+        assert req["response_truncated"] is True
+        assert "response_body" not in req
+
+    def test_malformed_json_does_not_raise(self, tmp_path):
+        ni = self._interceptor(tmp_path)
+        req = {}
+        ni._attach_body(req, _FakeResponse(b"{not json"), {"content-type": "application/json"})
+        assert "response_body" not in req
+
+
+class TestIntegrationChecksReadPerRequestBodies:
+    """Bodies now live per-request; checks must no longer read a page-level `response`."""
+
+    def _logs(self, body, url="http://localhost:3000/api/order"):
+        return {
+            "http://localhost:3000/cart": {
+                "url": "http://localhost:3000/cart",
+                "requests": [
+                    {"url": url, "method": "POST", "status": 200, "response_body": body},
+                ],
+            }
+        }
+
+    def test_type_mismatch_detected_from_captured_body(self):
+        from analyzers.integration_checker import IntegrationChecker
+
+        findings = IntegrationChecker().run_check(
+            "type_mismatches",
+            {
+                "network_logs": self._logs({"total": "42.00"}),
+                "type_contracts": [{
+                    "kind": "interface",
+                    "name": "Order",
+                    "file": "src/types/order.ts",
+                    "definition": "interface Order { total: number }",
+                }],
+            },
+        )
+
+        ids = [f["id"] for f in findings]
+        assert any("type-contract-mismatch-total" in i for i in ids)
+
+    def test_contract_drift_detected_from_captured_body(self):
+        from analyzers.integration_checker import IntegrationChecker
+
+        findings = IntegrationChecker().run_check(
+            "api_contract",
+            {
+                "network_logs": self._logs({"total": 1, "surpriseField": True}),
+                "api_contracts": {
+                    "typescript_types": [{
+                        "name": "Order",
+                        "file": "src/types/order.ts",
+                        "definition": "interface Order { total: number }",
+                    }],
+                },
+            },
+        )
+
+        assert any("surpriseField" in f["evidence"] for f in findings)
+
+    def test_no_captured_bodies_yields_no_false_positives(self):
+        from analyzers.integration_checker import IntegrationChecker
+
+        logs = {"http://x/": {"url": "http://x/", "requests": [{"url": "http://x/a", "status": 200}]}}
+        findings = IntegrationChecker().run_check(
+            "type_mismatches",
+            {"network_logs": logs, "type_contracts": []},
+        )
+        assert findings == []

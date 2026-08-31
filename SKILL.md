@@ -120,7 +120,8 @@ Group captured elements by **semantic role**:
 
 ### Step 6: Audit Phase
 
-Run all 36 checks (23 UI/UX + 13 integration):
+Run all 37 checks (24 UI/UX + 13 integration). Checks whose input layer is
+unavailable are reported as SKIPPED rather than silently passing:
 
 ```bash
 python3 skills/ui-audit-pro/scripts/audit.py audit \
@@ -176,10 +177,15 @@ skills/ui-audit-pro/
 
 ## Graceful Degradation
 
+Degradation is always *reported*, never silent. Every report includes an
+**Audit Coverage** section listing which checks ran and which were skipped,
+and zero findings with incomplete coverage is graded `UNKNOWN`, not `EXCELLENT`.
+
 | Scenario | Behavior |
 |----------|----------|
-| No source code, only live URL | Layer 1 runs fully; Layer 2 skipped; report notes "no source-level tracing" |
-| Source code only, no live URL | Layer 2 runs fully; Layer 1 skipped; report notes "no browser verification" |
+| `--url` given but Playwright not installed | **Hard error, exit 2.** No report is written. |
+| No source code, only live URL | Layer 1 runs; Layer 2 checks marked SKIPPED with reason |
+| Source code only, no live URL | Layer 2 runs; Layer 1 checks marked SKIPPED with reason |
 | Unknown framework | `static-html` adapter used as fallback; limited source tracing |
 | No TypeScript | Type contract checks skipped gracefully |
 | No adapters match | Full Layer 1 audit; report clearly states source tracing unavailable |
@@ -194,7 +200,7 @@ Every audit produces a structured report with:
 
 ## Audit Checklist
 
-### UI/UX Categories (23)
+### UI/UX Categories (24)
 - [ ] 1. Visual identity consistency
 - [ ] 2. Spacing rhythm
 - [ ] 3. Typography scale
@@ -218,6 +224,7 @@ Every audit produces a structured report with:
 - [ ] 21. Theming consistency (dark mode)
 - [ ] 22. Input affordance consistency
 - [ ] 23. Print/export/PDF view consistency
+- [ ] 24. AI design tropes & brand originality
 
 ### Integration Categories (13)
 - [ ] 1. API contract/schema drift

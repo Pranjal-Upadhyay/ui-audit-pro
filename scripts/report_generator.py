@@ -34,11 +34,16 @@ class ReportGenerator:
         discovery: Dict,
         output_dir: Path,
         previous_report: Optional[str] = None,
+        coverage: Optional[Dict] = None,
     ):
         self.findings = findings
         self.discovery = discovery
         self.output_dir = Path(output_dir)
         self.previous_report = previous_report
+        self.coverage = coverage or {}
+        self.executed = self.coverage.get("executed", [])
+        self.skipped = self.coverage.get("skipped", [])
+        self.capabilities = self.coverage.get("capabilities", {})
 
     def generate(self) -> str:
         """Generate the full audit report and return the file path."""
@@ -50,6 +55,7 @@ class ReportGenerator:
         # Build report sections
         sections = [
             self._header(),
+            self._coverage_section(),
             self._executive_summary(by_severity),
             self._severity_breakdown(by_severity),
             self._findings_by_severity(by_severity),
@@ -73,13 +79,69 @@ class ReportGenerator:
         return str(report_path)
 
     def _header(self) -> str:
+        total_checks = len(self.executed) + len(self.skipped)
+        coverage_line = (
+            f"\n**Checks Executed:** {len(self.executed)} of {total_checks}"
+            if total_checks
+            else ""
+        )
         return f"""# UI/UX Audit Report
 
 **Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 **Total Findings:** {len(self.findings)}
 **Routes Scanned:** {len(self.discovery.get("routes", []))}
 **Components Scanned:** {len(self.discovery.get("components", []))}
-**API Calls Scanned:** {len(self.discovery.get("api_calls", []))}"""
+**API Calls Scanned:** {len(self.discovery.get("api_calls", []))}{coverage_line}"""
+
+    def _coverage_section(self) -> str:
+        """Report what was and was not actually inspected.
+
+        Without this, zero findings is indistinguishable from zero coverage.
+        """
+        total = len(self.executed) + len(self.skipped)
+        if not total:
+            return ""
+
+        layer1 = self.capabilities.get("layer1_browser", False)
+        layer2 = self.capabilities.get("layer2_source", False)
+
+        if layer1 and layer2:
+            mode = "Combined (source + live browser)"
+        elif layer2:
+            mode = "Source-only (Layer 2) — no live instance inspected"
+        elif layer1:
+            mode = "Browser-only (Layer 1) — no source code inspected"
+        else:
+            mode = "None — no usable input data"
+
+        lines = [
+            "## Audit Coverage",
+            "",
+            f"**Mode:** {mode}",
+            f"**Executed:** {len(self.executed)} / {total} checks",
+            "",
+            "| Layer | Available |",
+            "|-------|-----------|",
+            f"| Source analysis (Layer 2) | {'yes' if layer2 else 'NO'} |",
+            f"| Browser capture (Layer 1) | {'yes' if layer1 else 'NO'} |",
+        ]
+
+        if self.skipped:
+            lines += [
+                "",
+                f"> **{len(self.skipped)} check(s) did not run.** Findings below cover only the "
+                f"{len(self.executed)} executed checks. This report is **not** a clean bill of "
+                "health for the skipped areas.",
+                "",
+                "<details><summary>Skipped checks</summary>",
+                "",
+                "| Check | Reason |",
+                "|-------|--------|",
+            ]
+            lines += [f"| {c['name']} | {c['reason']} |" for c in self.skipped]
+            lines += ["", "</details>"]
+
+        return "\n".join(lines)
 
     def _executive_summary(self, by_severity: Dict) -> str:
         critical = len(by_severity.get("critical", []))
@@ -117,11 +179,26 @@ class ReportGenerator:
                 f"The application has only {low} low-severity polish issue(s). "
                 "The overall UI/UX is consistent and well-integrated."
             )
+        elif self.skipped:
+            # Zero findings with incomplete coverage is an unknown, not a pass.
+            health = "unknown"
+            narrative = (
+                f"No issues were found, but {len(self.skipped)} of "
+                f"{len(self.executed) + len(self.skipped)} checks did not run. "
+                "This is **not** a clean bill of health — see Audit Coverage above for what "
+                "was skipped and why."
+            )
+        elif not self.executed:
+            health = "unknown"
+            narrative = (
+                "No checks were executed. Provide `--codebase` for source analysis and/or "
+                "`--url` for browser analysis."
+            )
         else:
             health = "excellent"
             narrative = (
-                "No issues were found. The application demonstrates strong UI/UX consistency "
-                "and proper frontend-backend integration."
+                "No issues were found across all executed checks. The application demonstrates "
+                "strong UI/UX consistency and proper frontend-backend integration."
             )
 
         return f"""## Executive Summary
@@ -322,7 +399,7 @@ The same root cause produces multiple findings. Addressing the root cause resolv
         api_calls = self.discovery.get("api_calls", [])
 
         route_list = "\n".join(
-            f"- `{r}`" if isinstance(r, str) else f"- `{r.get('url', 'unknown')}`"
+            f"- `{r}`" if isinstance(r, str) else f"- `{r.get('path') or r.get('url') or 'unknown'}`"
             for r in routes[:50]
         ) or "- None discovered"
 
@@ -336,9 +413,8 @@ The same root cause produces multiple findings. Addressing the root cause resolv
             for a in api_calls[:50]
         ) or "- None discovered"
 
-        # Determine mode
-        has_code = bool(self.discovery.get("components") or self.discovery.get("api_calls"))
-        has_live = bool(self.discovery.get("screenshots"))
+        has_code = self.capabilities.get("layer2_source", False)
+        has_live = self.capabilities.get("layer1_browser", False)
         if has_code and has_live:
             mode = "Combined (code + live instance)"
         elif has_code:
@@ -347,6 +423,33 @@ The same root cause produces multiple findings. Addressing the root cause resolv
             mode = "Live-instance (browser automation)"
         else:
             mode = "Unknown"
+
+        methods = []
+        if has_code:
+            methods += [
+                "- Static code analysis (source parsing, CSS extraction, type inference)",
+                "- Style extraction (design tokens, colors, spacing, typography)",
+            ]
+        if has_live:
+            methods += [
+                "- Browser automation (screenshot capture, DOM extraction)",
+                "- Network interception (request logging)",
+                "- Automated a11y checks",
+            ]
+        methods_block = "\n".join(methods) or "- None (no usable input data)"
+
+        not_tested = [
+            "- Features behind authentication walls (unless test credentials provided)",
+            "- Third-party embedded content",
+            "- Native mobile app components",
+        ]
+        if not has_live:
+            not_tested.insert(0, "- **All runtime behavior** — no live instance was inspected")
+        if not has_code:
+            not_tested.insert(0, "- **All source-level tracing** — no codebase was provided")
+        for c in self.skipped:
+            not_tested.append(f"- {c['name']} ({c['reason']})")
+        not_tested_block = "\n".join(not_tested)
 
         return f"""## Appendix
 
@@ -363,17 +466,10 @@ The same root cause produces multiple findings. Addressing the root cause resolv
 {api_list}
 
 ### Methods Used
-- Static code analysis (AST parsing, CSS extraction, type inference)
-- Browser automation (screenshot capture, DOM extraction)
-- Network interception (request/response logging)
-- Style computation (computed styles, design token extraction)
-- Automated a11y checks (contrast, ARIA, focus management)
+{methods_block}
 
 ### Areas Not Tested
-- Features behind authentication walls (unless test credentials provided)
-- Third-party embedded content
-- Native mobile app components
-- Server-side rendering edge cases (unless source available)
+{not_tested_block}
 """
 
 

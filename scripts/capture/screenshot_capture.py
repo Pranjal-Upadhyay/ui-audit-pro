@@ -118,21 +118,22 @@ class ScreenshotCapture:
         return routes
 
     def capture(self, url: str) -> Optional[Path]:
-        """Capture a full-page screenshot of a URL."""
-        # Try Playwright first
+        """Capture a full-page screenshot of a URL.
+
+        Returns None if no browser backend could produce an image. Previously
+        this wrote a .url.txt placeholder and returned it, which made a failed
+        capture indistinguishable from a successful one.
+        """
         screenshot_path = self._capture_playwright(url)
         if screenshot_path:
             return screenshot_path
 
-        # Try Selenium
         screenshot_path = self._capture_selenium(url)
         if screenshot_path:
             return screenshot_path
 
-        # Fallback: just save the URL for manual capture
-        url_file = self.output_dir / f"{self._url_to_filename(url)}.url.txt"
-        url_file.write_text(url)
-        return url_file
+        print(f"  ERROR: No browser backend could capture a screenshot of {url}")
+        return None
 
     def _capture_playwright(self, url: str) -> Optional[Path]:
         """Capture using Playwright."""

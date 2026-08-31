@@ -28,10 +28,60 @@ from detect_stack import StackDetector, StackInfo
 from analyzers.style_analyzer import StyleAnalyzer
 from analyzers.consistency_checker import ConsistencyChecker
 from analyzers.integration_checker import IntegrationChecker
+from capture import ensure_playwright, BrowserUnavailableError
 from capture.screenshot_capture import ScreenshotCapture
 from capture.network_interceptor import NetworkInterceptor
 from capture.dom_extractor import DOMExtractor
 from report_generator import ReportGenerator
+
+
+# Each check declares the data layer it needs so the report can distinguish
+# "ran and found nothing" from "never ran".
+#   source  -> needs codebase-derived styles/types (Layer 2)
+#   browser -> needs live DOM/network capture (Layer 1)
+#   either  -> has both a source-level and a browser-level code path
+UI_CHECKS = [
+    ("Visual Identity Consistency", "visual_identity", "either"),
+    ("Spacing Rhythm", "spacing_rhythm", "source"),
+    ("Typography Scale", "typography_scale", "source"),
+    ("Icon Set Consistency", "icon_consistency", "browser"),
+    ("Interaction State Consistency", "interaction_states", "browser"),
+    ("Modal/Popup/Overlay Behavior", "modal_behavior", "browser"),
+    ("Loading/Empty/Error State Consistency", "state_consistency", "browser"),
+    ("Form Validation Consistency", "form_validation", "browser"),
+    ("Content/Microcopy Consistency", "content_consistency", "browser"),
+    ("Structural/Navigational Consistency", "navigation_consistency", "browser"),
+    ("Responsive/Cross-Breakpoint Consistency", "responsive_consistency", "browser"),
+    ("Accessibility as Consistency Signal", "accessibility", "browser"),
+    ("Motion/Animation Consistency", "animation_consistency", "source"),
+    ("Layout Integrity Bugs", "layout_integrity", "browser"),
+    ("Data Density/Truncation Consistency", "truncation_consistency", "browser"),
+    ("Iconography/Color Semantics", "icon_color_semantics", "browser"),
+    ("Empty/Zero/Singular-Plural Correctness", "grammar_correctness", "browser"),
+    ("Pagination/Infinite-Scroll Consistency", "pagination_consistency", "browser"),
+    ("Notification/Toast Consistency", "notification_consistency", "browser"),
+    ("Permission/Role-Based UI Consistency", "permission_consistency", "browser"),
+    ("Theming Consistency (Dark Mode)", "theming_consistency", "source"),
+    ("Input Affordance Consistency", "input_consistency", "browser"),
+    ("Print/Export/PDF View Consistency", "print_consistency", "source"),
+    ("AI Design Tropes & Brand Originality", "ai_design_tropes", "either"),
+]
+
+INTEGRATION_CHECKS = [
+    ("API Contract/Schema Drift", "api_contract", "browser"),
+    ("Type Mismatches", "type_mismatches", "either"),
+    ("Loading/Error/Empty State Wiring", "state_wiring", "browser"),
+    ("Unhandled Promise Rejections", "unhandled_errors", "source"),
+    ("Race Conditions/Stale Data", "race_conditions", "browser"),
+    ("Optimistic UI Correctness", "optimistic_ui", "browser"),
+    ("Auth/Session Boundary Handling", "auth_handling", "browser"),
+    ("Latency/Timeout Behavior", "latency_timeout", "browser"),
+    ("Pagination/Data Consistency", "pagination_data", "browser"),
+    ("Real-time/Websocket Sync", "websocket_sync", "browser"),
+    ("File Upload/Download Edge Cases", "file_transfer", "browser"),
+    ("Idempotency/Double-Submit", "double_submit", "browser"),
+    ("Localization/Timezone Mismatches", "timezone_issues", "browser"),
+]
 
 
 def load_adapter(codebase_path: str, adapter_name: str):
@@ -90,6 +140,16 @@ class UIAuditEngine:
         self.captured_data = {}
         self.findings = []
 
+        # What the audit was actually able to observe. Drives the coverage
+        # section of the report so zero findings is never mistaken for a pass.
+        self.capabilities = {
+            "layer2_source": False,
+            "layer1_browser": False,
+            "network_bodies": False,
+            "multi_viewport": False,
+        }
+        self.coverage = {"executed": [], "skipped": []}
+
     def detect_stack(self) -> StackInfo:
         """Auto-detect the technology stack."""
         print("[0/4] Detecting technology stack...")
@@ -101,6 +161,7 @@ class UIAuditEngine:
 
         detector = StackDetector(str(self.codebase))
         self.stack = detector.detect()
+        self.capabilities["layer2_source"] = True
 
         print(f"  Frontend: {self.stack.frontend_framework}")
         print(f"  Backend: {self.stack.backend_framework}")
@@ -247,7 +308,11 @@ class UIAuditEngine:
 
         # Layer 1: Browser-level capture (when live URL available)
         if self.live_url:
+            # Fail loudly rather than silently producing empty snapshots.
+            ensure_playwright()
+
             print(f"  Capturing from live instance: {self.live_url}")
+            failures = []
 
             for route in discovery.get("routes", []):
                 url = route.get("path", "") if isinstance(route, dict) else str(route)
@@ -256,19 +321,42 @@ class UIAuditEngine:
 
                 print(f"  Capturing: {url}")
 
-                # Screenshot
                 screenshot_path = self.screenshot_capture.capture(url)
-                result["screenshots"][url] = str(screenshot_path)
+                if screenshot_path:
+                    result["screenshots"][url] = str(screenshot_path)
 
-                # DOM snapshot
-                dom_snapshot = self.dom_extractor.extract(url)
-                result["dom_snapshots"][url] = dom_snapshot
+                dom_snapshot = self._extract_multi_viewport(url)
+                if dom_snapshot:
+                    result["dom_snapshots"][url] = dom_snapshot
+                else:
+                    failures.append(url)
 
-                # Network logs
                 network_log = self.network_interceptor.get_logs(url)
-                result["network_logs"][url] = network_log
+                if network_log:
+                    result["network_logs"][url] = network_log
+
+            # Active probing of discovered safe endpoints (Phase 1.2). Reaches
+            # endpoints not called on page load and repeats to expose flakiness.
+            api_calls = discovery.get("api_calls", [])
+            if api_calls:
+                print(f"  Probing {len(api_calls)} discovered API endpoint(s)...")
+                probes = self.network_interceptor.probe_endpoints(self.live_url, api_calls)
+                for key, log in probes.items():
+                    result["network_logs"][key] = log
+                if probes:
+                    print(f"  Probed {len(probes)} endpoint(s) x{self.network_interceptor.PROBE_COUNT}")
+
+            self.capabilities["layer1_browser"] = bool(result["dom_snapshots"])
+
+            if failures:
+                print(f"  ERROR: {len(failures)} route(s) could not be captured: {failures}")
+            if not result["dom_snapshots"]:
+                print(
+                    "  ERROR: Browser capture produced no DOM snapshots. "
+                    "Layer 1 checks will be reported as SKIPPED, not as passing."
+                )
         else:
-            print("  No live URL provided; skipping browser-level capture")
+            print("  No live URL provided; skipping browser-level capture (Layer 1)")
 
         # Save capture results
         capture_path = self.output / "capture.json"
@@ -278,6 +366,56 @@ class UIAuditEngine:
         self.captured_data = result
         print(f"  Capture saved to {capture_path}")
         return result
+
+    # Desktop first: it is the canonical snapshot fed to cross-page consistency
+    # checks. The narrower viewports contribute only breakpoint-specific deltas,
+    # so the same page isn't triple-counted as three "different" screens.
+    VIEWPORTS = [
+        {"width": 1440, "height": 900, "label": "desktop"},
+        {"width": 768, "height": 1024, "label": "tablet"},
+        {"width": 375, "height": 812, "label": "mobile"},
+    ]
+
+    @staticmethod
+    def _issue_signature(issue: dict) -> tuple:
+        return (issue.get("type"), issue.get("element"))
+
+    def _extract_multi_viewport(self, url: str):
+        """Capture a route at several viewports.
+
+        Returns the desktop snapshot enriched with `breakpoint_issues`: layout
+        problems that appear at a narrower viewport but NOT at desktop. Those are
+        genuine responsive regressions (e.g. horizontal overflow only at 375px),
+        which is exactly what the responsive/cross-breakpoint check consumes.
+        """
+        primary = None
+        desktop_sigs = set()
+        breakpoint_issues = []
+        captured = 0
+
+        for vp in self.VIEWPORTS:
+            snapshot = self.dom_extractor.extract(url, viewport=vp)
+            if not snapshot:
+                continue
+            captured += 1
+            issues = snapshot.get("layout_issues", [])
+            if primary is None:
+                primary = snapshot
+                desktop_sigs = {self._issue_signature(i) for i in issues}
+                continue
+            for issue in issues:
+                if self._issue_signature(issue) in desktop_sigs:
+                    continue  # also broken on desktop → not a breakpoint regression
+                tagged = dict(issue)
+                tagged["viewport"] = vp["label"]
+                tagged["description"] = f"[{vp['label']} @ {vp['width']}px] {issue.get('description', '')}"
+                breakpoint_issues.append(tagged)
+
+        if primary is not None:
+            primary["breakpoint_issues"] = breakpoint_issues
+            if captured > 1:
+                self.capabilities["multi_viewport"] = True
+        return primary
 
     def audit(self) -> list:
         """Phase 3: Run all consistency and integration checks."""
@@ -298,78 +436,70 @@ class UIAuditEngine:
                 capture_data = json.load(f)
 
         # Merge discovery data into capture_data for checkers
-        capture_data["type_contracts"] = discovery.get("type_contracts", [])
+        type_contracts = discovery.get("type_contracts", [])
+        capture_data["type_contracts"] = type_contracts
         capture_data["api_calls"] = discovery.get("api_calls", [])
         capture_data["components"] = discovery.get("components", [])
 
+        # The API-contract check reads `api_contracts.typescript_types`; adapters
+        # emit these as `type_contracts`. Bridge them so the check doesn't report
+        # "no contract found" when TypeScript interfaces plainly exist.
+        capture_data.setdefault("api_contracts", {})
+        capture_data["api_contracts"].setdefault(
+            "typescript_types",
+            [
+                {"name": t.get("name"), "file": t.get("file"), "definition": t.get("definition", "")}
+                for t in type_contracts
+                if t.get("kind") in ("interface", "type")
+            ],
+        )
+
+        # Recompute capabilities from the data actually on disk, so that
+        # `audit` works as a standalone command after a prior capture run.
+        self.capabilities["layer1_browser"] = bool(capture_data.get("dom_snapshots"))
+        self.capabilities["layer2_source"] = bool(
+            capture_data.get("computed_styles") or discovery.get("components")
+        )
+
         findings = []
+        self.coverage = {"executed": [], "skipped": []}
 
-        # --- Layer 1: UI/UX Consistency Checks (23 categories) ---
-        print("  [Layer 1] Running UI/UX consistency checks...")
+        def run_checks(checks, runner, label):
+            print(f"  [{label}] Running {len(checks)} checks...")
+            for check_name, check_id, requires in checks:
+                if not self._can_run(requires):
+                    reason = (
+                        "no live URL / browser capture (Layer 1 unavailable)"
+                        if requires == "browser"
+                        else "no codebase provided (Layer 2 unavailable)"
+                        if requires == "source"
+                        else "neither source nor browser data available"
+                    )
+                    self.coverage["skipped"].append(
+                        {"name": check_name, "id": check_id, "requires": requires, "reason": reason}
+                    )
+                    print(f"    SKIPPED: {check_name} — {reason}")
+                    continue
 
-        ui_checks = [
-            ("Visual Identity Consistency", "visual_identity"),
-            ("Spacing Rhythm", "spacing_rhythm"),
-            ("Typography Scale", "typography_scale"),
-            ("Icon Set Consistency", "icon_consistency"),
-            ("Interaction State Consistency", "interaction_states"),
-            ("Modal/Popup/Overlay Behavior", "modal_behavior"),
-            ("Loading/Empty/Error State Consistency", "state_consistency"),
-            ("Form Validation Consistency", "form_validation"),
-            ("Content/Microcopy Consistency", "content_consistency"),
-            ("Structural/Navigational Consistency", "navigation_consistency"),
-            ("Responsive/Cross-Breakpoint Consistency", "responsive_consistency"),
-            ("Accessibility as Consistency Signal", "accessibility"),
-            ("Motion/Animation Consistency", "animation_consistency"),
-            ("Layout Integrity Bugs", "layout_integrity"),
-            ("Data Density/Truncation Consistency", "truncation_consistency"),
-            ("Iconography/Color Semantics", "icon_color_semantics"),
-            ("Empty/Zero/Singular-Plural Correctness", "grammar_correctness"),
-            ("Pagination/Infinite-Scroll Consistency", "pagination_consistency"),
-            ("Notification/Toast Consistency", "notification_consistency"),
-            ("Permission/Role-Based UI Consistency", "permission_consistency"),
-            ("Theming Consistency (Dark Mode)", "theming_consistency"),
-            ("Input Affordance Consistency", "input_consistency"),
-            ("Print/Export/PDF View Consistency", "print_consistency"),
-        ]
-
-        for check_name, check_id in ui_checks:
-            print(f"    Checking: {check_name}")
-            try:
-                check_findings = self.consistency_checker.run_check(check_id, capture_data)
-                findings.extend(check_findings)
-            except Exception as e:
-                print(f"    Warning: {check_name} check failed: {e}")
-
-        # --- Layer 1 + 2: Frontend-Backend Integration Checks (13 categories) ---
-        print("  [Layer 1+2] Running integration checks...")
-
-        integration_checks = [
-            ("API Contract/Schema Drift", "api_contract"),
-            ("Type Mismatches", "type_mismatches"),
-            ("Loading/Error/Empty State Wiring", "state_wiring"),
-            ("Unhandled Promise Rejections", "unhandled_errors"),
-            ("Race Conditions/Stale Data", "race_conditions"),
-            ("Optimistic UI Correctness", "optimistic_ui"),
-            ("Auth/Session Boundary Handling", "auth_handling"),
-            ("Latency/Timeout Behavior", "latency_timeout"),
-            ("Pagination/Data Consistency", "pagination_data"),
-            ("Real-time/Websocket Sync", "websocket_sync"),
-            ("File Upload/Download Edge Cases", "file_transfer"),
-            ("Idempotency/Double-Submit", "double_submit"),
-            ("Localization/Timezone Mismatches", "timezone_issues"),
-        ]
-
-        for check_name, check_id in integration_checks:
-            print(f"    Checking: {check_name}")
-            try:
-                check_findings = self.integration_checker.run_check(
-                    check_id, capture_data, codebase=self.codebase
+                print(f"    Checking: {check_name}")
+                self.coverage["executed"].append(
+                    {"name": check_name, "id": check_id, "requires": requires}
                 )
-                findings.extend(check_findings)
-            except Exception as e:
-                print(f"    Warning: {check_name} check failed: {e}")
+                try:
+                    findings.extend(runner(check_id))
+                except Exception as e:
+                    print(f"    ERROR: {check_name} check failed: {e}")
 
+        run_checks(
+            UI_CHECKS,
+            lambda cid: self.consistency_checker.run_check(cid, capture_data),
+            "Layer 1+2",
+        )
+        run_checks(
+            INTEGRATION_CHECKS,
+            lambda cid: self.integration_checker.run_check(cid, capture_data, codebase=self.codebase),
+            "Integration",
+        )
         # Annotate findings with source locations if adapters provided them
         self._annotate_findings_with_source_locations(findings, discovery)
 
@@ -378,10 +508,29 @@ class UIAuditEngine:
         with open(findings_path, "w") as f:
             json.dump(findings, f, indent=2, default=str)
 
+        # Persist coverage alongside findings so the report can be regenerated
+        # standalone without losing the executed/skipped distinction.
+        with open(self.output / "coverage.json", "w") as f:
+            json.dump(
+                {"capabilities": self.capabilities, **self.coverage}, f, indent=2, default=str
+            )
+
         self.findings = findings
-        print(f"  Found {len(findings)} issues across {len(ui_checks) + len(integration_checks)} checks")
+        executed = len(self.coverage["executed"])
+        skipped = len(self.coverage["skipped"])
+        print(f"  Found {len(findings)} issues across {executed} executed checks")
+        if skipped:
+            print(f"  {skipped} check(s) SKIPPED for lack of input data — see coverage.json")
         print(f"  Findings saved to {findings_path}")
         return findings
+
+    def _can_run(self, requires: str) -> bool:
+        """Whether the data a check depends on was actually captured."""
+        if requires == "browser":
+            return self.capabilities["layer1_browser"]
+        if requires == "source":
+            return self.capabilities["layer2_source"]
+        return self.capabilities["layer1_browser"] or self.capabilities["layer2_source"]
 
     def _annotate_findings_with_source_locations(self, findings: list, discovery: dict):
         """Enrich findings with file/line info from adapters when available."""
@@ -427,11 +576,19 @@ class UIAuditEngine:
             with open(discovery_path) as f:
                 discovery = json.load(f)
 
+        coverage_path = self.output / "coverage.json"
+        if coverage_path.exists():
+            with open(coverage_path) as f:
+                coverage = json.load(f)
+        else:
+            coverage = {"capabilities": self.capabilities, **self.coverage}
+
         generator = ReportGenerator(
             findings=self.findings,
             discovery=discovery,
             output_dir=self.output,
             previous_report=previous_report,
+            coverage=coverage,
         )
 
         report_path = generator.generate()
@@ -502,25 +659,29 @@ def main():
         live_url=getattr(args, "url", None),
     )
 
-    if args.command == "detect":
-        engine.detect_stack()
-    elif args.command == "discover":
-        engine.detect_stack()
-        engine.discover()
-    elif args.command == "capture":
-        engine.detect_stack()
-        engine.capture()
-    elif args.command == "audit":
-        engine.detect_stack()
-        engine.audit()
-    elif args.command == "report":
-        findings_path = Path(args.findings)
-        if findings_path.exists():
-            with open(findings_path) as f:
-                engine.findings = json.load(f)
-        engine.generate_report(getattr(args, "previous_report", None))
-    elif args.command == "full":
-        engine.full_audit(getattr(args, "previous_report", None))
+    try:
+        if args.command == "detect":
+            engine.detect_stack()
+        elif args.command == "discover":
+            engine.detect_stack()
+            engine.discover()
+        elif args.command == "capture":
+            engine.detect_stack()
+            engine.capture()
+        elif args.command == "audit":
+            engine.detect_stack()
+            engine.audit()
+        elif args.command == "report":
+            findings_path = Path(args.findings)
+            if findings_path.exists():
+                with open(findings_path) as f:
+                    engine.findings = json.load(f)
+            engine.generate_report(getattr(args, "previous_report", None))
+        elif args.command == "full":
+            engine.full_audit(getattr(args, "previous_report", None))
+    except BrowserUnavailableError as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

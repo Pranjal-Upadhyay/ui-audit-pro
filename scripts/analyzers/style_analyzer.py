@@ -74,6 +74,7 @@ class StyleAnalyzer:
         styles = {
             "css_files": {},
             "tailwind_classes": defaultdict(set),
+            "tailwind_modifiers": set(),
             "inline_styles": [],
             "styled_components": [],
             "css_variables": {},
@@ -117,9 +118,20 @@ class StyleAnalyzer:
                 except (UnicodeDecodeError, OSError):
                     continue
 
+        # Single searchable blob of every style declaration found anywhere
+        # (CSS files, styled-components, CSS-in-JS). Checks that look for
+        # at-rules like `@media print` must search this, not css_files alone,
+        # or they silently no-op on inline-style and Tailwind codebases.
+        styles["all_style_text"] = "\n".join(
+            list(styles["css_files"].values())
+            + [sc["css"] for sc in styles["styled_components"]]
+            + [s["css"] for s in styles["inline_styles"]]
+        )
+
         # Convert sets to lists for JSON serialization
         for key in ["font_families", "font_sizes", "colors", "border_radii",
-                     "spacing_values", "shadows", "transitions", "breakpoints"]:
+                     "spacing_values", "shadows", "transitions", "breakpoints",
+                     "tailwind_modifiers"]:
             styles[key] = sorted(styles[key])
 
         return styles
@@ -171,6 +183,17 @@ class StyleAnalyzer:
             ):
                 styles["css_variables"][f"--{var_name}"] = var_value
 
+    @staticmethod
+    def _normalize_js_style_object(style_body: str) -> str:
+        """Turn `{ borderRadius: '8px' }` body text into `border-radius: 8px;` CSS."""
+        declarations = []
+        for prop, value in re.findall(
+            r"([A-Za-z][A-Za-z0-9]*)\s*:\s*['\"]([^'\"]+)['\"]", style_body
+        ):
+            kebab = re.sub(r"(?<!^)(?=[A-Z])", "-", prop).lower()
+            declarations.append(f"{kebab}: {value};")
+        return "\n".join(declarations)
+
     def _extract_js_styles(self, js_content: str, file_path: str, styles: Dict):
         """Extract styles from JS/TS files."""
         # Tailwind classes in className
@@ -180,16 +203,22 @@ class StyleAnalyzer:
             classes = match.group(1).split()
             for cls in classes:
                 # Extract base utility (before modifiers like hover:, md:, etc.)
-                base = cls.split(":")[-1] if ":" in cls else cls
+                parts = cls.split(":")
+                base = parts[-1]
+                for modifier in parts[:-1]:
+                    styles["tailwind_modifiers"].add(modifier)
                 if base:
                     styles["tailwind_classes"][base].add(file_path)
 
         # Inline styles
         for match in re.finditer(r"style=\{\{([^}]+)\}\}", js_content):
+            normalized = self._normalize_js_style_object(match.group(1))
             styles["inline_styles"].append({
                 "file": file_path,
                 "style": match.group(1),
+                "css": normalized,
             })
+            self._extract_css_values(normalized, styles)
 
         # styled-components / emotion / css-in-JS
         for match in re.finditer(
@@ -197,8 +226,9 @@ class StyleAnalyzer:
         ):
             styles["styled_components"].append({
                 "file": file_path,
-                "css": match.group(1)[:200],
+                "css": match.group(1),
             })
+            self._extract_css_values(match.group(1), styles)
 
         # AI Tropes Detection in class names and content
         ai_tropes = styles.get("ai_tropes", {})

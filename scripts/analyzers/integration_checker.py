@@ -5,6 +5,7 @@ Integration Checker — Runs frontend-backend integration checks.
 Implements all 13 integration categories from the audit spec.
 """
 
+import json
 import re
 from typing import Dict, List
 from collections import defaultdict
@@ -19,6 +20,32 @@ class IntegrationChecker:
         if method:
             return method(capture_data, codebase)
         return []
+
+    @staticmethod
+    def _slug(text: str, maxlen: int = 60) -> str:
+        """Deterministic, id-safe slug from an arbitrary string."""
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", str(text)).strip("-").lower()
+        return cleaned[:maxlen] or "anon"
+
+    @staticmethod
+    def _iter_json_responses(logs: Dict):
+        """Yield (request_entry, parsed_body) for every captured JSON API response.
+
+        Bodies live per-request under `response_body`; there is no single
+        page-level response object.
+        """
+        if not isinstance(logs, dict):
+            return
+        for req in logs.get("requests", []):
+            if not isinstance(req, dict):
+                continue
+            body = req.get("response_body")
+            if isinstance(body, dict):
+                yield req, body
+            elif isinstance(body, list):
+                for item in body:
+                    if isinstance(item, dict):
+                        yield req, item
 
     def _check_api_contract(self, data: Dict, codebase=None) -> List[Dict]:
         """Check API contract/schema drift."""
@@ -41,30 +68,106 @@ class IntegrationChecker:
                 "effort": "medium",
             })
 
-        # Check for fields in types that don't match network responses
+        # Check for fields in types that don't match network responses.
+        # Precompute each type's field set once.
+        type_field_sets = [
+            (t, set(re.findall(r"(\w+)\s*[?:]", t.get("definition", ""))))
+            for t in ts_types
+        ]
+
+        # One representative response per endpoint (probes repeat the same call,
+        # so comparing every attempt would multiply identical findings).
+        seen_drift = set()
         for url, logs in network_logs.items():
-            if not isinstance(logs, dict):
+            for req, response in self._iter_json_responses(logs):
+                response_fields = set(response.keys())
+                if not response_fields:
+                    continue
+
+                # Associate the response with the single best-matching type by
+                # field overlap. Comparing against unrelated interfaces (e.g. a
+                # UI ModalProps) would flag every field as "drift" — pure noise.
+                best_type, best_fields, best_overlap = None, set(), 0
+                for t, tf in type_field_sets:
+                    overlap = len(response_fields & tf)
+                    if overlap > best_overlap:
+                        best_type, best_fields, best_overlap = t, tf, overlap
+
+                # Require a real association: the response must share at least one
+                # field with the type. Zero-overlap pairings (e.g. a UI ModalProps
+                # against an order payload) are the noise we're excluding.
+                if best_type is None or best_overlap < 1:
+                    continue
+
+                missing_fields = response_fields - best_fields
+                if not missing_fields:
+                    continue
+
+                endpoint = req.get("url", url)
+                dedup_key = (best_type["name"], endpoint, frozenset(missing_fields))
+                if dedup_key in seen_drift:
+                    continue
+                seen_drift.add(dedup_key)
+
+                findings.append({
+                    "id": f"contract-drift-{best_type['name']}-{self._slug(endpoint)}",
+                    "title": f"Type '{best_type['name']}' missing fields from API response",
+                    "category": "API Contract/Schema Drift",
+                    "severity": "medium",
+                    "location": {"file": best_type.get("file", "unknown"), "route": endpoint},
+                    "description": f"Backend sends fields not in TypeScript type: {missing_fields}",
+                    "evidence": f"Missing from type: {missing_fields}. Response fields: {response_fields}",
+                    "recommended_fix": f"Add missing fields to the {best_type['name']} interface",
+                    "effort": "small",
+                })
+
+        # Reliability & schema-variance across active probes of the same endpoint.
+        for label, logs in network_logs.items():
+            if not isinstance(logs, dict) or not logs.get("probed"):
                 continue
-            response = logs.get("response", {})
-            response_fields = set(response.keys()) if isinstance(response, dict) else set()
+            attempts = logs.get("requests", [])
+            statuses = [a.get("status") for a in attempts if a.get("status") is not None]
+            errors = [a for a in attempts if a.get("error")]
+            endpoint = logs.get("endpoint", label)
 
-            for ts_type in ts_types:
-                type_fields = set(re.findall(r"(\w+)\s*[?:]", ts_type.get("definition", "")))
-                unused_fields = type_fields - response_fields
-                missing_fields = response_fields - type_fields
+            # (a) Intermittent failure: same request, mixed success/failure.
+            ok = [s for s in statuses if s < 400]
+            bad = [s for s in statuses if s >= 500] + [1 for _ in errors]
+            if ok and bad:
+                findings.append({
+                    "id": f"flaky-endpoint-{endpoint}",
+                    "title": f"Intermittent failures on {endpoint}",
+                    "category": "API Contract/Schema Drift",
+                    "severity": "high",
+                    "location": {"route": endpoint},
+                    "description": (
+                        f"{len(ok)}/{len(attempts)} probes succeeded and "
+                        f"{len(bad)}/{len(attempts)} failed (statuses seen: {sorted(set(statuses))}). "
+                        "The endpoint is non-deterministic under identical requests."
+                    ),
+                    "evidence": f"Statuses across {len(attempts)} probes: {statuses}",
+                    "recommended_fix": "Investigate the intermittent 5xx path; the frontend must handle it gracefully",
+                    "effort": "medium",
+                })
 
-                if missing_fields:
-                    findings.append({
-                        "id": f"contract-drift-{ts_type['name']}",
-                        "title": f"Type '{ts_type['name']}' missing fields from API response",
-                        "category": "API Contract/Schema Drift",
-                        "severity": "medium",
-                        "location": {"file": ts_type.get("file", "unknown")},
-                        "description": f"Backend sends fields not in TypeScript type: {missing_fields}",
-                        "evidence": f"Missing from type: {missing_fields}. Response fields: {response_fields}",
-                        "recommended_fix": f"Add missing fields to the {ts_type['name']} interface",
-                        "effort": "small",
-                    })
+            # (b) Schema variance: successful responses with differing shapes.
+            shapes = {json.dumps(a["response_shape"], sort_keys=True)
+                      for a in attempts if a.get("response_shape") is not None}
+            if len(shapes) > 1:
+                findings.append({
+                    "id": f"schema-variance-{endpoint}",
+                    "title": f"Response schema varies across calls to {endpoint}",
+                    "category": "API Contract/Schema Drift",
+                    "severity": "medium",
+                    "location": {"route": endpoint},
+                    "description": (
+                        f"{len(shapes)} distinct response shapes observed across {len(attempts)} "
+                        "identical probes. Consumers can't rely on a stable contract."
+                    ),
+                    "evidence": f"Distinct shapes: {list(shapes)[:3]}",
+                    "recommended_fix": "Make the response schema deterministic, or document/version the variants",
+                    "effort": "medium",
+                })
 
         return findings
 
@@ -98,75 +201,71 @@ class IntegrationChecker:
 
         # Check each network response against TypeScript type definitions
         for url, logs in network_logs.items():
-            if not isinstance(logs, dict):
-                continue
-            response = logs.get("response", {})
-            if not isinstance(response, dict):
-                continue
+            for req, response in self._iter_json_responses(logs):
+                endpoint = req.get("url", url)
+                for key, value in response.items():
+                    actual_type = type(value).__name__
 
-            for key, value in response.items():
-                actual_type = type(value).__name__
+                    # Check against TypeScript type definitions
+                    if key in ts_field_types:
+                        expected_type = ts_field_types[key]["expected_type"].lower()
+                        source = ts_field_types[key]["source"]
+                        file = ts_field_types[key]["file"]
 
-                # Check against TypeScript type definitions
-                if key in ts_field_types:
-                    expected_type = ts_field_types[key]["expected_type"].lower()
-                    source = ts_field_types[key]["source"]
-                    file = ts_field_types[key]["file"]
+                        # Map TypeScript types to Python types
+                        type_mismatches = {
+                            ("number", "str"): True,
+                            ("string", "int"): True,
+                            ("string", "float"): True,
+                            ("boolean", "str"): True,
+                        }
 
-                    # Map TypeScript types to Python types
-                    type_mismatches = {
-                        ("number", "str"): True,
-                        ("string", "int"): True,
-                        ("string", "float"): True,
-                        ("boolean", "str"): True,
-                    }
+                        is_mismatch = type_mismatches.get((expected_type, actual_type), False)
 
-                    is_mismatch = type_mismatches.get((expected_type, actual_type), False)
-
-                    if is_mismatch:
-                        findings.append({
-                            "id": f"type-contract-mismatch-{key}-{hash(url)}",
-                            "title": f"Type contract mismatch: '{key}' is {actual_type} but TypeScript declares {expected_type}",
-                            "category": "Type Mismatches",
-                            "severity": "high",
-                            "location": {
-                                "route": url,
-                                "file": file,
-                                "type_source": source,
-                            },
-                            "description": (
-                                f"Field '{key}' in API response is '{value}' (type: {actual_type}), "
-                                f"but TypeScript interface '{source}' declares it as {expected_type}. "
-                                f"This will cause silent formatting/math bugs at runtime."
-                            ),
-                            "evidence": {
-                                "field": key,
-                                "expected_type": expected_type,
-                                "actual_type": actual_type,
-                                "actual_value": value,
-                                "typescript_source": source,
-                                "typescript_file": file,
-                            },
-                            "recommended_fix": (
-                                f"Either fix the backend to send '{key}' as {expected_type}, "
-                                f"or update the TypeScript interface '{source}' to declare '{key}' as {actual_type}"
-                            ),
-                            "effort": "small",
-                        })
-                else:
-                    # No TypeScript type found — heuristic check for string-looking numbers
-                    if isinstance(value, str) and value.replace(".", "").replace("-", "").isdigit():
-                        findings.append({
-                            "id": f"type-mismatch-{key}-{hash(url)}",
-                            "title": f"Numeric value '{key}' sent as string (no TypeScript type found)",
-                            "category": "Type Mismatches",
-                            "severity": "medium",
-                            "location": {"route": url},
-                            "description": f"Field '{key}' is '{value}' (string) but likely should be a number",
-                            "evidence": f"Value: '{value}' (type: {actual_type})",
-                            "recommended_fix": f"Ensure backend sends '{key}' as a number, or define a TypeScript type",
-                            "effort": "small",
-                        })
+                        if is_mismatch:
+                            findings.append({
+                                "id": f"type-contract-mismatch-{key}-{hash(endpoint)}",
+                                "title": f"Type contract mismatch: '{key}' is {actual_type} but TypeScript declares {expected_type}",
+                                "category": "Type Mismatches",
+                                "severity": "high",
+                                "location": {
+                                    "route": endpoint,
+                                    "file": file,
+                                    "type_source": source,
+                                },
+                                "description": (
+                                    f"Field '{key}' in API response is '{value}' (type: {actual_type}), "
+                                    f"but TypeScript interface '{source}' declares it as {expected_type}. "
+                                    f"This will cause silent formatting/math bugs at runtime."
+                                ),
+                                "evidence": {
+                                    "field": key,
+                                    "expected_type": expected_type,
+                                    "actual_type": actual_type,
+                                    "actual_value": value,
+                                    "typescript_source": source,
+                                    "typescript_file": file,
+                                },
+                                "recommended_fix": (
+                                    f"Either fix the backend to send '{key}' as {expected_type}, "
+                                    f"or update the TypeScript interface '{source}' to declare '{key}' as {actual_type}"
+                                ),
+                                "effort": "small",
+                            })
+                    else:
+                        # No TypeScript type found — heuristic check for string-looking numbers
+                        if isinstance(value, str) and value.replace(".", "").replace("-", "").isdigit():
+                            findings.append({
+                                "id": f"type-mismatch-{key}-{hash(endpoint)}",
+                                "title": f"Numeric value '{key}' sent as string (no TypeScript type found)",
+                                "category": "Type Mismatches",
+                                "severity": "medium",
+                                "location": {"route": endpoint},
+                                "description": f"Field '{key}' is '{value}' (string) but likely should be a number",
+                                "evidence": f"Value: '{value}' (type: {actual_type})",
+                                "recommended_fix": f"Ensure backend sends '{key}' as a number, or define a TypeScript type",
+                                "effort": "small",
+                            })
 
         # CODE-ONLY MODE: Analyze source code for type mismatches
         if codebase and not network_logs and ts_field_types:
@@ -265,6 +364,7 @@ class IntegrationChecker:
         findings = []
         network_logs = data.get("network_logs", {})
 
+        seen = set()  # collapse repeated probe attempts of the same endpoint/status
         for url, logs in network_logs.items():
             if not isinstance(logs, dict):
                 continue
@@ -273,13 +373,17 @@ class IntegrationChecker:
             for req in requests:
                 status = req.get("status")
                 if status and status >= 400:
+                    dedup_key = (req.get("url", url), status)
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
                     # Check if there's error handling by examining response headers and context
                     has_error_ui = req.get("has_error_ui", False)
                     # Also check if there's an error boundary or error component nearby
                     has_error_boundary = req.get("has_error_boundary", False)
                     if not has_error_ui and not has_error_boundary:
                         findings.append({
-                            "id": f"unhandled-error-{url}-{status}",
+                            "id": f"unhandled-error-{self._slug(str(req.get('url', url)))}-{status}",
                             "title": f"HTTP {status} error without user feedback",
                             "category": "Loading/Error/Empty State Wiring",
                             "severity": "high",
@@ -656,27 +760,22 @@ class IntegrationChecker:
         network_logs = data.get("network_logs", {})
 
         for url, logs in network_logs.items():
-            if not isinstance(logs, dict):
-                continue
-
-            response = logs.get("response", {})
-            if not isinstance(response, dict):
-                continue
-
-            # Check for raw UTC timestamps
-            for key, value in response.items():
-                if isinstance(value, str) and "T" in value and "Z" in value:
-                    # Looks like a raw ISO timestamp
-                    findings.append({
-                        "id": f"raw-utc-{key}-{hash(url)}",
-                        "title": f"Raw UTC timestamp '{key}' displayed without conversion",
-                        "category": "Localization/Timezone Mismatches",
-                        "severity": "medium",
-                        "location": {"route": url},
-                        "description": f"Field '{key}' contains a raw UTC timestamp that may not be converted to user's timezone",
-                        "evidence": f"Value: {value}",
-                        "recommended_fix": "Convert UTC timestamps to user's local timezone before display",
-                        "effort": "small",
-                    })
+            for req, response in self._iter_json_responses(logs):
+                endpoint = req.get("url", url)
+                # Check for raw UTC timestamps
+                for key, value in response.items():
+                    if isinstance(value, str) and "T" in value and "Z" in value:
+                        # Looks like a raw ISO timestamp
+                        findings.append({
+                            "id": f"raw-utc-{key}-{hash(endpoint)}",
+                            "title": f"Raw UTC timestamp '{key}' displayed without conversion",
+                            "category": "Localization/Timezone Mismatches",
+                            "severity": "medium",
+                            "location": {"route": endpoint},
+                            "description": f"Field '{key}' contains a raw UTC timestamp that may not be converted to user's timezone",
+                            "evidence": f"Value: {value}",
+                            "recommended_fix": "Convert UTC timestamps to user's local timezone before display",
+                            "effort": "small",
+                        })
 
         return findings

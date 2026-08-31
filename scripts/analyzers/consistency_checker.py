@@ -331,12 +331,18 @@ class ConsistencyChecker:
                 tag = el.get("tag", "")
 
                 if not has_hover and tag in ("button", "a"):
+                    # Elements often have no id (id == ''), so build a stable,
+                    # unique signature from route + tag + text to avoid every
+                    # finding colliding on the same key (which would let
+                    # baseline-diffing silently collapse them into one).
+                    ident = el.get("id") or el.get("text", "") or "anon"
+                    sig = self._slug(f"{url}-{tag}-{ident}")
                     findings.append({
-                        "id": f"missing-hover-{el.get('id', 'unknown')}",
+                        "id": f"missing-hover-{sig}",
                         "title": "Interactive element missing hover state",
                         "category": "Interaction State Consistency",
                         "severity": "low",
-                        "location": {"route": url, "component": tag},
+                        "location": {"route": url, "component": tag, "element": ident},
                         "description": f"Element '{el.get('text', '')}' lacks hover state styling",
                         "recommended_fix": "Add :hover pseudo-class styles for visual feedback",
                         "effort": "trivial",
@@ -585,18 +591,27 @@ class ConsistencyChecker:
         findings = []
         styles = data.get("computed_styles", {})
 
-        css_files = styles.get("css_files", {})
+        style_text = styles.get("all_style_text", "")
         transition_durations = set()
 
-        for file_path, content in css_files.items():
-            for match in re.finditer(r"transition-duration:\s*([\d.]+)(?:ms|s)", content):
-                try:
-                    value = float(match.group(1))
-                    if "s" in match.group(0):
-                        value *= 1000
-                    transition_durations.add(value)
-                except ValueError:
-                    continue
+        for match in re.finditer(
+            r"(?:transition-duration|animation-duration|transition|animation)\s*:[^;{}]*?"
+            r"([\d.]+)(ms|s)\b",
+            style_text,
+        ):
+            try:
+                value = float(match.group(1))
+            except ValueError:
+                continue
+            if match.group(2) == "s":
+                value *= 1000
+            transition_durations.add(value)
+
+        # Tailwind duration utilities (duration-150 == 150ms)
+        for cls in styles.get("tailwind_classes", {}):
+            m = re.fullmatch(r"duration-(\d+)", cls)
+            if m:
+                transition_durations.add(float(m.group(1)))
 
         if len(transition_durations) > 5:
             findings.append({
@@ -622,7 +637,7 @@ class ConsistencyChecker:
             layout_issues = snapshot.get("layout_issues", [])
             for issue in layout_issues:
                 findings.append({
-                    "id": f"layout-{issue.get('type', 'unknown')}-{url}",
+                    "id": f"layout-{issue.get('type', 'unknown')}-{self._slug(url + '-' + str(issue.get('element', '')))}",
                     "title": f"Layout issue: {issue.get('type', 'Unknown')}",
                     "category": "Layout Integrity Bugs",
                     "severity": "high" if issue.get("severity") == "high" else "medium",
@@ -806,22 +821,28 @@ class ConsistencyChecker:
         styles = data.get("computed_styles", {})
 
         css_files = styles.get("css_files", {})
-        has_dark_mode = any("@media (prefers-color-scheme: dark)" in c or "dark" in f.lower()
-                          for f, c in css_files.items())
+        style_text = styles.get("all_style_text", "")
+        modifiers = styles.get("tailwind_modifiers", [])
 
-        if not has_dark_mode and css_files:
-            # Check for theme files
-            theme_files = [f for f in css_files.keys() if "theme" in f.lower() or "dark" in f.lower()]
-            if not theme_files:
-                findings.append({
-                    "id": "no-dark-mode",
-                    "title": "No dark mode implementation detected",
-                    "category": "Theming Consistency (Dark Mode)",
-                    "severity": "low",
-                    "description": "No dark mode styles or theme files found in the codebase",
-                    "recommended_fix": "Consider adding dark mode support with a theme system",
-                    "effort": "large",
-                })
+        if not self._has_source_styles(styles):
+            return findings
+
+        has_dark_mode = (
+            "prefers-color-scheme: dark" in style_text
+            or "dark" in modifiers
+            or any("theme" in f.lower() or "dark" in f.lower() for f in css_files)
+        )
+
+        if not has_dark_mode:
+            findings.append({
+                "id": "no-dark-mode",
+                "title": "No dark mode implementation detected",
+                "category": "Theming Consistency (Dark Mode)",
+                "severity": "low",
+                "description": "No dark mode styles, `dark:` variants, or theme files found in the codebase",
+                "recommended_fix": "Consider adding dark mode support with a theme system",
+                "effort": "large",
+            })
 
         return findings
 
@@ -861,10 +882,12 @@ class ConsistencyChecker:
         findings = []
         styles = data.get("computed_styles", {})
 
-        css_files = styles.get("css_files", {})
-        has_print_styles = any("@media print" in c for c in css_files.values())
+        has_print_styles = (
+            "@media print" in styles.get("all_style_text", "")
+            or "print" in styles.get("tailwind_modifiers", [])
+        )
 
-        if not has_print_styles and css_files:
+        if not has_print_styles and self._has_source_styles(styles):
             findings.append({
                 "id": "no-print-styles",
                 "title": "No print media styles detected",
@@ -1018,6 +1041,25 @@ class ConsistencyChecker:
             })
 
         return findings
+
+    @staticmethod
+    def _slug(text: str, maxlen: int = 60) -> str:
+        """Deterministic, filesystem/id-safe slug from arbitrary element text."""
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", str(text)).strip("-").lower()
+        return cleaned[:maxlen] or "anon"
+
+    @staticmethod
+    def _has_source_styles(styles: Dict) -> bool:
+        """True if any styling was found in source, regardless of authoring method.
+
+        Absence-of-feature checks must gate on this rather than on `css_files`,
+        which is empty for Tailwind-only and inline-style codebases.
+        """
+        return bool(
+            styles.get("all_style_text")
+            or styles.get("tailwind_classes")
+            or styles.get("inline_styles")
+        )
 
     def _style_signature(self, styles: Dict, properties: list) -> str:
         """Create a signature string from style properties for comparison."""
