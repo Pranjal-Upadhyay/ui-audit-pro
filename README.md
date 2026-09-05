@@ -4,20 +4,20 @@
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6366f1,50:8b5cf6,100:06b6d4&height=200&section=header&text=UI%20Audit%20Pro&fontSize=70&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Two-layer%20UI%2FUX%20%26%20integration%20audit%20for%20any%20web%20app&descSize=18&descAlignY=60" alt="UI Audit Pro" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:6366f1,50:8b5cf6,100:06b6d4&amp;height=200&amp;section=header&amp;text=UI%20Audit%20Pro&amp;fontSize=70&amp;fontColor=ffffff&amp;animation=fadeIn&amp;fontAlignY=38&amp;desc=Two-layer%20UI%2FUX%20%26%20integration%20audit%20for%20any%20web%20app&amp;descSize=18&amp;descAlignY=60" alt="UI Audit Pro" width="100%"/>
 
 <br/>
 
 <a href="https://github.com/Pranjal-Upadhyay/ui-audit-pro">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&duration=3000&pause=800&color=8B5CF6&center=true&vCenter=true&width=720&lines=37+automated+checks+across+two+layers;axe-core+accessibility+%E2%80%A2+WCAG+2.1+A%2FAA;Coverage-aware+CI+gate+%E2%80%A2+never+a+false+%22clean%22;Detects+AI+design+slop+%26+brand+originality" alt="Typing SVG" />
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&amp;weight=600&amp;size=22&amp;duration=3000&amp;pause=800&amp;color=8B5CF6&amp;center=true&amp;vCenter=true&amp;width=720&amp;lines=37+automated+checks+across+two+layers;axe-core+accessibility+%E2%80%A2+WCAG+2.1+A%2FAA;Coverage-aware+CI+gate+%E2%80%A2+never+a+false+%22clean%22;Detects+AI+design+slop+%26+brand+originality" alt="Typing SVG" />
 </a>
 
 <br/><br/>
 
 <!-- Badges -->
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)
-![axe-core](https://img.shields.io/badge/a11y-axe--core%204.10-663399?style=for-the-badge&logo=accessibleicons&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&amp;logo=python&amp;logoColor=white)
+![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&amp;logo=playwright&amp;logoColor=white)
+![axe-core](https://img.shields.io/badge/a11y-axe--core%204.10-663399?style=for-the-badge&amp;logo=accessibleicons&amp;logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-2ea44f?style=for-the-badge)
 
 ![Checks](https://img.shields.io/badge/Checks-37%20automated-6366f1?style=flat-square)
@@ -40,7 +40,7 @@
 
 ## 🎯 What Is This?
 
-**UI Audit Pro** runs **37 automated checks** — **24 UI/UX consistency categories** (including AI design tropes & brand originality) and **13 frontend-to-backend integration checks** — across any web application.
+**UI Audit Pro** runs **37 automated checks** — **24 UI/UX consistency categories** (including AI design tropes &amp; brand originality) and **13 frontend-to-backend integration checks** — across any web application.
 
 <table>
 <tr>
@@ -58,10 +58,10 @@ Runs against a **live URL** via Playwright. Framework-agnostic. Captures:
 <td width="50%" valign="top">
 
 ### 📂 Layer 2 — Source-Level
-Reads your **codebase** with pluggable framework adapters. Pinpoints the **exact file & line**:
+Reads your **codebase** with pluggable framework adapters. Pinpoints the **exact file &amp; line**:
 - 🔎 Auto-detects your stack
 - 🎨 Parses inline React styles, Tailwind, CSS modules
-- 🔗 Traces API call sites & TypeScript contracts
+- 🔗 Traces API call sites &amp; TypeScript contracts
 - 🗺️ Maps routes, components, and data flow
 - 🧩 Falls back gracefully when a layer is missing
 
@@ -78,13 +78,13 @@ Reads your **codebase** with pluggable framework adapters. Pinpoints the **exact
 | | Capability | Why it matters |
 |---|---|---|
 | 🕵️ | **Honest coverage reporting** | Every report ships an *Audit Coverage* section (executed vs skipped). Zero findings + incomplete coverage ≠ a pass. |
-| ♿ | **axe-core accessibility** | Real Deque axe-core engine — ~90 WCAG 2.0/2.1 A/AA rules with true impact levels, precise selectors & help URLs (not 3 hand-rolled heuristics). |
+| ♿ | **axe-core accessibility** | Real Deque axe-core engine — ~90 WCAG 2.0/2.1 A/AA rules with true impact levels, precise selectors &amp; help URLs (not 3 hand-rolled heuristics). |
 | 🚦 | **Coverage-aware CI gate** | Baseline diffing with exit codes. A finding that vanished only because its check was *skipped* is flagged **UNVERIFIED**, never "resolved" — a coverage drop can't hide a regression. |
-| 📐 | **Real layout integrity** | Overflow, clipping, off-viewport elements & **<44px touch targets** measured from the actual rendered box model. |
+| 📐 | **Real layout integrity** | Overflow, clipping, off-viewport elements &amp; **&lt;44px touch targets** measured from the actual rendered box model. |
 | 📱 | **Multi-viewport regression** | Captures 3 breakpoints and flags issues that appear *only* at narrow widths. |
 | 🔁 | **Live endpoint probing** | Re-hits safe (GET/HEAD) endpoints to surface **intermittent 5xx flakiness** and **schema variance** a single request would miss. |
 | 🔐 | **Secret-safe capture** | Response bodies are written to disk with `token`/`secret`/`password`/`authorization`/`api_key` fields redacted, and JSON shapes inferred with bounded depth. |
-| 🤖 | **AI-slop detection** | Flags uncustomized AI-starter output: default palettes, font monoculture, LLM clichés, decorative-emoji overuse, lorem/placeholder content, interchangeable CTAs, glassmorphism & signature gradients. |
+| 🤖 | **AI-slop detection** | Flags uncustomized AI-starter output: default palettes, font monoculture, LLM clichés, decorative-emoji overuse, lorem/placeholder content, interchangeable CTAs, glassmorphism &amp; signature gradients. |
 
 ---
 
@@ -106,12 +106,18 @@ flowchart TD
     L2 --> D2[Style / token parsing]
     L2 --> D3[API call sites + TS types]
 
-    C1 & C2 & C3 & C4 --> E[Consistency + Integration Checks]
-    D1 & D2 & D3 --> E
+    C1 --> E[Consistency + Integration Checks]
+    C2 --> E
+    C3 --> E
+    C4 --> E
+    D1 --> E
+    D2 --> E
+    D3 --> E
 
     E --> F[coverage.json<br/>executed vs skipped]
     E --> G[findings.json<br/>severity-ranked]
-    F & G --> H[[audit-report.md]]
+    F --> H[[audit-report.md]]
+    G --> H
     G --> I{{CI Gate · baseline diff}}
     I -->|new-high regression| J([exit 1 ❌])
     I -->|clean| K([exit 0 ✅])
@@ -142,16 +148,16 @@ flowchart TD
 
 <br/>
 
-**Brand & AI Tropes (Category 24)** — detects "AI slop":
+**Brand &amp; AI Tropes (Category 24)** — detects "AI slop":
 - Uncustomized indigo-500 / slate palettes (`#6366f1`)
 - Inter / Geist font monoculture
 - LLM marketing clichés ("supercharge your workflow", "seamless integration", …)
 - Decorative-emoji overuse (✨🚀🔥) and excessive em-dashes (`—`)
 - Placeholder / lorem content shipped to production
 - Interchangeable generic CTAs ("Get Started" / "Learn More")
-- Radial blur glow blobs (`blur-3xl`), glassmorphism, cliché gradients & "Powered by AI" pill badges
+- Radial blur glow blobs (`blur-3xl`), glassmorphism, cliché gradients &amp; "Powered by AI" pill badges
 
-**Visual & Layout (Categories 1–23):**
+**Visual &amp; Layout (Categories 1–23):**
 Visual identity · spacing rhythm (4/8px grid) · typography scale · icon consistency · interaction states (real `:hover`/`:focus`) · modal behavior · loading/empty/error states · form validation · microcopy · navigation · responsive breakpoints · **axe-core accessibility** · animation · **layout integrity (overflow, clipping, touch targets)** · truncation · color semantics · grammar · pagination · notifications · role-based UI · dark mode · input affordance · print/PDF views.
 
 </details>
@@ -387,7 +393,7 @@ pytest tests/ -q      # 74 tests
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:06b6d4,50:8b5cf6,100:6366f1&height=120&section=footer" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:06b6d4,50:8b5cf6,100:6366f1&amp;height=120&amp;section=footer" width="100%"/>
 
 <sub>Built for honest audits — because "no findings" should mean "we actually looked."</sub>
 
