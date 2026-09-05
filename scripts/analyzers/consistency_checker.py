@@ -571,15 +571,25 @@ class ConsistencyChecker:
 
             a11y_issues = snapshot.get("a11y_issues", [])
             for issue in a11y_issues:
-                severity = "high" if issue.get("impact") == "critical" else "medium"
+                # axe-core supplies a mapped `severity` and precise impact;
+                # the legacy heuristic path only sets impact=='critical'.
+                severity = issue.get("severity")
+                if not severity:
+                    severity = "high" if issue.get("impact") == "critical" else "medium"
+                element = issue.get("element", "unknown")
+                rule = issue.get("type", "unknown")
+                evidence = issue.get("evidence", "")
+                help_url = issue.get("help_url")
+                if help_url:
+                    evidence = f"{evidence}\nRule: {rule} — {help_url}".strip()
                 findings.append({
-                    "id": f"a11y-{issue.get('type', 'unknown')}-{url}",
+                    "id": f"a11y-{rule}-{self._slug(url + '-' + str(element))}",
                     "title": issue.get("title", "Accessibility issue"),
                     "category": "Accessibility as Consistency Signal",
                     "severity": severity,
-                    "location": {"route": url, "element": issue.get("element", "unknown")},
+                    "location": {"route": url, "element": element},
                     "description": issue.get("description", ""),
-                    "evidence": issue.get("evidence", ""),
+                    "evidence": evidence,
                     "recommended_fix": issue.get("fix", "Fix accessibility issue"),
                     "effort": issue.get("effort", "small"),
                 })

@@ -13,6 +13,11 @@ Two-layer audit skill that performs full UI/UX visual/behavioral consistency che
 Everything involving **rendered output** — screenshots, computed styles, DOM structure, network requests/responses, interaction behavior — is done via browser automation (Playwright) against the actual running app. This layer does NOT need to know whether the app is React, Next.js, Vue, Svelte, or raw HTML. It covers:
 - All 24 UI/UX consistency categories (including AI design tropes detection)
 - All 13 frontend-backend integration checks (network layer)
+- **Accessibility powered by axe-core** — the vendored Deque axe-core engine
+  (`scripts/capture/vendor/axe.min.js`, MPL-2.0) runs ~90 WCAG 2.0/2.1 A/AA +
+  best-practice rules against the live DOM, so a11y findings carry real impact
+  levels, precise selectors, and Deque help URLs. Falls back to lightweight
+  heuristics only if axe cannot be injected (never silently reports zero).
 - **Works with zero source code** — can audit a live URL only
 
 ### Layer 2: Source-Code-Level Checks (Framework-Aware, Pluggable Adapters)
@@ -211,7 +216,9 @@ skills/ui-audit-pro/
     └── capture/                      # Browser-level data capture
         ├── screenshot_capture.py     # Playwright screenshot capture
         ├── network_interceptor.py    # Network traffic interception
-        └── dom_extractor.py          # DOM snapshot extraction
+        ├── dom_extractor.py          # DOM snapshot + axe-core a11y extraction
+        └── vendor/
+            └── axe.min.js            # Vendored axe-core (Deque, MPL-2.0)
 ```
 
 ## Graceful Degradation
@@ -228,6 +235,7 @@ and zero findings with incomplete coverage is graded `UNKNOWN`, not `EXCELLENT`.
 | Unknown framework | `static-html` adapter used as fallback; limited source tracing |
 | No TypeScript | Type contract checks skipped gracefully |
 | No adapters match | Full Layer 1 audit; report clearly states source tracing unavailable |
+| axe-core cannot be injected | Falls back to built-in a11y heuristics (missing alt/label/button-name); `a11y_engine` records which ran |
 
 ## Report Structure
 

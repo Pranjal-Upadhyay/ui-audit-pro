@@ -21,6 +21,24 @@ class DOMExtractor:
     # Minimum touch-target size per WCAG 2.5.5 / Apple HIG (px).
     MIN_TOUCH_TARGET = 44
 
+    # Vendored axe-core (Deque, MPL-2.0) — the industry-standard WCAG engine.
+    # Injected into the page so accessibility findings come from ~90 audited
+    # rules with real impact levels, not a hand-rolled trio of heuristics.
+    AXE_PATH = Path(__file__).parent / "vendor" / "axe.min.js"
+
+    # Cap axe findings per snapshot so a page with a systemic issue (e.g. a
+    # low-contrast token applied everywhere) can't flood the report.
+    MAX_AXE_ISSUES = 60
+
+    # axe impact -> our severity. serious counts as high: WCAG serious issues
+    # (missing form labels, keyboard traps) block real users, not just polish.
+    _AXE_IMPACT_SEVERITY = {
+        "critical": "high",
+        "serious": "high",
+        "moderate": "medium",
+        "minor": "low",
+    }
+
     def extract(self, url: str, viewport: Optional[Dict] = None) -> Optional[Dict]:
         """Extract DOM snapshot from a URL at an optional viewport.
 
@@ -174,8 +192,10 @@ class DOMExtractor:
                     return results;
                 }""")
 
-                # A11y issues
-                a11y_issues = page.evaluate("""() => {
+                # A11y issues. Prefer axe-core (comprehensive, WCAG-mapped);
+                # fall back to the lightweight heuristics below only if axe
+                # could not run, so we never silently lose accessibility signal.
+                heuristic_a11y_issues = page.evaluate("""() => {
                     const issues = [];
 
                     // Check images without alt
@@ -221,6 +241,9 @@ class DOMExtractor:
 
                     return issues;
                 }""")
+
+                axe_issues, axe_ran = self._run_axe(page)
+                a11y_issues = axe_issues if axe_ran else heuristic_a11y_issues
 
                 # Text elements for grammar checks
                 text_elements = page.evaluate("""() => {
@@ -329,6 +352,7 @@ class DOMExtractor:
                     "toasts": toasts,
                     "forms": forms,
                     "a11y_issues": a11y_issues,
+                    "a11y_engine": "axe-core" if axe_ran else "heuristic",
                     "layout_issues": layout_issues,
                     "text_elements": text_elements,
                 }
@@ -347,6 +371,74 @@ class DOMExtractor:
         except Exception as e:
             print(f"  ERROR: DOM extraction failed for {url}: {e}")
             return None
+
+    def _run_axe(self, page):
+        """Inject vendored axe-core and return (issues, ran).
+
+        `ran` is False if axe could not be injected or executed, letting the
+        caller fall back to heuristics rather than silently reporting zero
+        accessibility issues (which would be dishonest — the check didn't run).
+        Each axe *node* becomes one issue so findings carry a precise target.
+        """
+        if not self.AXE_PATH.exists():
+            return [], False
+        try:
+            page.add_script_tag(path=str(self.AXE_PATH))
+            raw = page.evaluate("""async () => {
+                try {
+                    const res = await axe.run(document, {
+                        resultTypes: ['violations'],
+                        runOnly: { type: 'tag',
+                            values: ['wcag2a','wcag2aa','wcag21a','wcag21aa','best-practice'] },
+                    });
+                    return { ok: true, violations: res.violations };
+                } catch (e) {
+                    return { ok: false, error: String(e) };
+                }
+            }""")
+        except Exception as e:
+            print(f"  NOTE: axe-core could not run ({e}); using heuristic a11y checks")
+            return [], False
+
+        if not raw or not raw.get("ok"):
+            return [], False
+
+        return self._map_axe_violations(raw.get("violations", []), self.MAX_AXE_ISSUES), True
+
+    @classmethod
+    def _map_axe_violations(cls, violations, max_issues):
+        """Flatten axe violations into one issue per failing node.
+
+        Pure/browser-free so it can be unit-tested against captured axe JSON.
+        """
+        issues = []
+        for v in violations or []:
+            rule = v.get("id", "unknown")
+            help_url = v.get("helpUrl", "")
+            for node in v.get("nodes", []):
+                target = node.get("target") or []
+                selector = " ".join(t if isinstance(t, str) else str(t) for t in target) or "unknown"
+                summary = (node.get("failureSummary") or "").strip()
+                html = (node.get("html") or "").strip()
+                if len(html) > 300:
+                    html = html[:300] + "…"
+                impact = node.get("impact") or v.get("impact") or "moderate"
+                issues.append({
+                    "type": rule,
+                    "element": selector,
+                    "title": v.get("help", "Accessibility issue"),
+                    "description": v.get("description", ""),
+                    "impact": impact,
+                    "severity": cls._AXE_IMPACT_SEVERITY.get(impact, "medium"),
+                    "fix": summary or f"See {help_url}",
+                    "evidence": html,
+                    "help_url": help_url,
+                    "wcag_tags": [t for t in v.get("tags", []) if t.startswith("wcag")],
+                    "effort": "small",
+                })
+                if len(issues) >= max_issues:
+                    return issues
+        return issues
 
     def _url_to_filename(self, url: str) -> str:
         """Convert URL to safe filename."""

@@ -592,3 +592,107 @@ class TestBaselineDiff:
         from baseline_diff import gate
         with pytest.raises(ValueError):
             gate({"new": [], "new_high": [], "severity_regressions": []}, "bogus")
+
+
+class TestAxeMapping:
+    """Phase 3: axe-core violation -> a11y_issue mapping (browser-free)."""
+
+    def _sample(self):
+        return [{
+            "id": "color-contrast",
+            "help": "Elements must meet minimum color contrast ratio thresholds",
+            "description": "Ensure contrast between foreground and background",
+            "helpUrl": "https://dequeuniversity.com/rules/axe/4.10/color-contrast",
+            "impact": "serious",
+            "tags": ["cat.color", "wcag2aa", "wcag143"],
+            "nodes": [
+                {"target": ["p.lead"], "impact": "serious",
+                 "failureSummary": "Fix any of the following: contrast 2.1 is too low",
+                 "html": "<p class='lead'>hi</p>"},
+                {"target": [".footer > span"], "impact": "serious",
+                 "failureSummary": "", "html": "<span>x</span>"},
+            ],
+        }, {
+            "id": "region",
+            "help": "All page content should be contained by landmarks",
+            "description": "Ensures all content is contained by a landmark",
+            "helpUrl": "https://dequeuniversity.com/rules/axe/4.10/region",
+            "impact": "moderate",
+            "tags": ["cat.keyboard", "best-practice"],
+            "nodes": [{"target": ["img"], "impact": "moderate",
+                       "failureSummary": "wrap in a landmark", "html": "<img src=x>"}],
+        }]
+
+    def test_flattens_one_issue_per_node(self):
+        from capture.dom_extractor import DOMExtractor
+        issues = DOMExtractor._map_axe_violations(self._sample(), 100)
+        assert len(issues) == 3  # 2 contrast nodes + 1 region node
+
+    def test_severity_mapping(self):
+        from capture.dom_extractor import DOMExtractor
+        issues = DOMExtractor._map_axe_violations(self._sample(), 100)
+        by_rule = {i["type"]: i for i in issues}
+        assert by_rule["color-contrast"]["severity"] == "high"   # serious -> high
+        assert by_rule["region"]["severity"] == "medium"         # moderate -> medium
+
+    def test_precise_selector_and_wcag_tags(self):
+        from capture.dom_extractor import DOMExtractor
+        issues = DOMExtractor._map_axe_violations(self._sample(), 100)
+        contrast = [i for i in issues if i["type"] == "color-contrast"]
+        assert contrast[0]["element"] == "p.lead"
+        assert "wcag2aa" in contrast[0]["wcag_tags"]
+        assert "best-practice" not in contrast[0]["wcag_tags"]  # non-wcag tag dropped
+
+    def test_fix_falls_back_to_help_url_when_no_summary(self):
+        from capture.dom_extractor import DOMExtractor
+        issues = DOMExtractor._map_axe_violations(self._sample(), 100)
+        contrast = [i for i in issues if i["type"] == "color-contrast"]
+        assert contrast[1]["fix"].startswith("See https://dequeuniversity.com")
+
+    def test_respects_max_issues_cap(self):
+        from capture.dom_extractor import DOMExtractor
+        issues = DOMExtractor._map_axe_violations(self._sample(), 1)
+        assert len(issues) == 1
+
+    def test_empty_violations_is_empty(self):
+        from capture.dom_extractor import DOMExtractor
+        assert DOMExtractor._map_axe_violations([], 100) == []
+
+
+class TestAccessibilityCheckConsumesAxe:
+    """Phase 3: _check_accessibility honours axe-supplied severity + help_url."""
+
+    def _data(self, issue):
+        return {"dom_snapshots": {"http://x/products": {
+            "a11y_engine": "axe-core", "a11y_issues": [issue]}}}
+
+    def test_uses_axe_severity_and_stable_id(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        c = ConsistencyChecker()
+        issue = {"type": "color-contrast", "element": "p.lead", "severity": "high",
+                 "title": "Contrast too low", "description": "d", "evidence": "<p>",
+                 "help_url": "https://deque/color-contrast", "fix": "raise contrast"}
+        findings = c._check_accessibility(self._data(issue))
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["severity"] == "high"
+        assert f["id"].startswith("a11y-color-contrast-")
+        assert "color-contrast" in f["evidence"] and "deque" in f["evidence"]
+
+    def test_two_issues_same_rule_get_unique_ids(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        c = ConsistencyChecker()
+        data = {"dom_snapshots": {"http://x/p": {"a11y_engine": "axe-core", "a11y_issues": [
+            {"type": "color-contrast", "element": "p.a", "severity": "high", "title": "t"},
+            {"type": "color-contrast", "element": "p.b", "severity": "high", "title": "t"},
+        ]}}}
+        findings = c._check_accessibility(data)
+        assert len({f["id"] for f in findings}) == 2
+
+    def test_legacy_heuristic_impact_still_maps(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        c = ConsistencyChecker()
+        issue = {"type": "missing-alt", "element": "img", "impact": "critical",
+                 "title": "Image missing alt text", "fix": "add alt"}
+        findings = c._check_accessibility(self._data(issue))
+        assert findings[0]["severity"] == "high"  # impact critical -> high

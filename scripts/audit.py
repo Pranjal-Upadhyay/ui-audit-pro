@@ -148,6 +148,7 @@ class UIAuditEngine:
             "layer1_browser": False,
             "network_bodies": False,
             "multi_viewport": False,
+            "axe_core": False,
         }
         self.coverage = {"executed": [], "skipped": []}
 
@@ -416,6 +417,8 @@ class UIAuditEngine:
             primary["breakpoint_issues"] = breakpoint_issues
             if captured > 1:
                 self.capabilities["multi_viewport"] = True
+            if primary.get("a11y_engine") == "axe-core":
+                self.capabilities["axe_core"] = True
         return primary
 
     def audit(self) -> list:
