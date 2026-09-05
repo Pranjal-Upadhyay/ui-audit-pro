@@ -143,6 +143,44 @@ python3 skills/ui-audit-pro/scripts/audit.py full \
   --codebase <path> --url <live-url> --output ./audit-output
 ```
 
+## Baseline Diffing (CI Gate)
+
+Turn a one-shot audit into a repeatable gate. Save a run as the baseline, then
+compare later runs against it to see what is **new**, **resolved**, and
+**persistent** — and fail CI on regressions.
+
+```bash
+# 1. Establish a baseline (any full/live run's output dir is a baseline)
+python3 skills/ui-audit-pro/scripts/audit.py full \
+  --codebase <path> --url <live-url> --output ./baseline
+
+# 2a. Compare a fresh run inline (runs the audit, then gates)
+python3 skills/ui-audit-pro/scripts/audit.py full \
+  --codebase <path> --url <live-url> --output ./current \
+  --baseline ./baseline --fail-on new-high
+
+# 2b. Or gate an existing output dir against a baseline (no re-run)
+python3 skills/ui-audit-pro/scripts/audit.py baseline \
+  --output ./current --baseline ./baseline --fail-on new-high
+```
+
+**`--fail-on` modes** (exit code `1` = gate failed, `0` = passed):
+
+| Mode | Fails when |
+|------|------------|
+| `none` | never (report only) |
+| `new` | any new finding appears |
+| `new-high` | a new **high/critical** finding appears *(default)* |
+| `regressed` | a new high/critical finding **or** an existing finding's severity increased |
+| `any` | any new finding **or** any severity regression |
+
+**Coverage-aware — critical property:** a baseline finding that is *absent* this
+run is only counted **resolved** if its check actually ran again. If the check
+was **skipped** (e.g. no live URL this run), the finding is reported as
+**UNVERIFIED**, never resolved — so a drop in coverage can never silently mask a
+regression. Runs that skip checks that the baseline exercised also flag
+`COVERAGE REGRESSED`.
+
 ## Folder Structure
 
 ```
@@ -154,6 +192,7 @@ skills/ui-audit-pro/
 │   └── backend-integration-checks.md # 13 integration checks reference
 └── scripts/
     ├── audit.py                      # Main engine (two-layer orchestrator)
+    ├── baseline_diff.py              # Coverage-aware baseline diff + CI gate
     ├── detect_stack.py               # Auto-detects framework stack
     ├── report_generator.py           # Generates structured audit reports
     ├── __init__.py

@@ -33,6 +33,7 @@ from capture.screenshot_capture import ScreenshotCapture
 from capture.network_interceptor import NetworkInterceptor
 from capture.dom_extractor import DOMExtractor
 from report_generator import ReportGenerator
+from baseline_diff import FAIL_MODES
 
 
 # Each check declares the data layer it needs so the report can distinguish
@@ -613,6 +614,50 @@ class UIAuditEngine:
 
         return report_path
 
+    def compare_baseline(self, baseline: str, fail_on: str = "new-high") -> int:
+        """Compare the current run against a saved baseline. Returns an exit code.
+
+        This is the CI-gate entry point: exit 0 = gate passed, exit 1 = gate
+        tripped (a regression per --fail-on). The comparison is coverage-aware,
+        so a baseline issue whose check was skipped this run is reported as
+        UNVERIFIED rather than silently counted as resolved.
+        """
+        from baseline_diff import (
+            load_findings, load_coverage, diff, gate, format_summary,
+        )
+
+        current = self.findings
+        if not current:
+            findings_path = self.output / "findings.json"
+            if findings_path.exists():
+                with open(findings_path) as f:
+                    current = json.load(f)
+
+        current_cov = None
+        cov_path = self.output / "coverage.json"
+        if cov_path.exists():
+            with open(cov_path) as f:
+                current_cov = json.load(f)
+
+        baseline_findings = load_findings(Path(baseline))
+        baseline_cov = load_coverage(Path(baseline))
+
+        result = diff(baseline_findings, current, baseline_cov, current_cov)
+
+        print("=" * 60)
+        print(f"Baseline comparison (fail-on: {fail_on})")
+        print("=" * 60)
+        print(format_summary(result))
+
+        failed = gate(result, fail_on)
+        print("=" * 60)
+        if failed:
+            print("GATE FAILED — see new/regressed issues above.")
+        else:
+            print("GATE PASSED.")
+        print("=" * 60)
+        return 1 if failed else 0
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -646,6 +691,28 @@ def main():
     # Full pipeline
     full_parser = subparsers.add_parser("full", parents=[common_args], help="Run complete audit pipeline")
     full_parser.add_argument("--previous-report", help="Previous report for diffing")
+    full_parser.add_argument(
+        "--baseline",
+        help="Path to a baseline findings.json (or its output dir) to gate against",
+    )
+    full_parser.add_argument(
+        "--fail-on",
+        choices=FAIL_MODES,
+        default="new-high",
+        help="Exit non-zero when: new (any new issue), new-high (new high/critical), "
+             "regressed (new-high or worsened severity), any, or none. Default: new-high.",
+    )
+
+    # Baseline comparison (standalone CI gate over an existing run)
+    baseline_parser = subparsers.add_parser(
+        "baseline", parents=[common_args], help="Compare an existing run against a baseline (CI gate)"
+    )
+    baseline_parser.add_argument(
+        "--baseline", required=True, help="Path to baseline findings.json or its output dir"
+    )
+    baseline_parser.add_argument(
+        "--fail-on", choices=FAIL_MODES, default="new-high", help="Gate failure mode (default: new-high)"
+    )
 
     args = parser.parse_args()
 
@@ -679,6 +746,13 @@ def main():
             engine.generate_report(getattr(args, "previous_report", None))
         elif args.command == "full":
             engine.full_audit(getattr(args, "previous_report", None))
+            baseline = getattr(args, "baseline", None)
+            if baseline:
+                code = engine.compare_baseline(baseline, getattr(args, "fail_on", "new-high"))
+                sys.exit(code)
+        elif args.command == "baseline":
+            code = engine.compare_baseline(args.baseline, args.fail_on)
+            sys.exit(code)
     except BrowserUnavailableError as e:
         print(f"\nERROR: {e}", file=sys.stderr)
         sys.exit(2)

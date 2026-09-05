@@ -521,3 +521,74 @@ class TestIntegrationChecksReadPerRequestBodies:
             {"network_logs": logs, "type_contracts": []},
         )
         assert findings == []
+
+
+class TestBaselineDiff:
+    def _f(self, fid, sev="low", category="Cat A", title="t"):
+        return {"id": fid, "severity": sev, "category": category, "title": title}
+
+    def test_new_and_resolved_and_persistent(self):
+        from baseline_diff import diff
+        base = [self._f("a"), self._f("b")]
+        cur = [self._f("b"), self._f("c")]
+        r = diff(base, cur)
+        assert [x["id"] for x in r["new"]] == ["c"]
+        assert [x["id"] for x in r["resolved"]] == ["a"]
+        assert r["persistent"] == ["b"]
+
+    def test_resolved_becomes_unverified_when_check_skipped(self):
+        """A baseline issue must NOT count as resolved if its check didn't re-run."""
+        from baseline_diff import diff
+        base = [self._f("a", category="Layout Integrity Bugs")]
+        cur = []  # 'a' is gone...
+        current_cov = {"skipped": [{"name": "Layout Integrity Bugs", "id": "layout_integrity"}]}
+        r = diff(base, cur, current_coverage=current_cov)
+        assert r["resolved"] == []
+        assert [x["id"] for x in r["unverified"]] == ["a"]
+
+    def test_resolved_when_check_did_run(self):
+        from baseline_diff import diff
+        base = [self._f("a", category="Layout Integrity Bugs")]
+        cur = []
+        current_cov = {"skipped": [{"name": "Some Other Check", "id": "other"}]}
+        r = diff(base, cur, current_coverage=current_cov)
+        assert [x["id"] for x in r["resolved"]] == ["a"]
+        assert r["unverified"] == []
+
+    def test_severity_regression_detected(self):
+        from baseline_diff import diff
+        base = [self._f("a", sev="low")]
+        cur = [self._f("a", sev="high")]
+        r = diff(base, cur)
+        assert [x["id"] for x in r["severity_regressions"]] == ["a"]
+
+    def test_coverage_regression_flagged(self):
+        from baseline_diff import diff
+        base_cov = {"skipped": []}
+        cur_cov = {"skipped": [{"name": "Form Validation Consistency"}]}
+        r = diff([], [], baseline_coverage=base_cov, current_coverage=cur_cov)
+        assert r["coverage_regressed"] == ["Form Validation Consistency"]
+
+    def test_gate_new_high(self):
+        from baseline_diff import diff, gate
+        base = []
+        cur = [self._f("a", sev="high"), self._f("b", sev="low")]
+        r = diff(base, cur)
+        assert gate(r, "new-high") is True
+        assert gate(r, "none") is False
+
+    def test_gate_new_low_only(self):
+        from baseline_diff import diff, gate
+        r = diff([], [self._f("a", sev="low")])
+        assert gate(r, "new-high") is False   # low doesn't trip the high gate
+        assert gate(r, "new") is True         # ...but trips the 'any new' gate
+
+    def test_gate_regressed_mode(self):
+        from baseline_diff import diff, gate
+        r = diff([self._f("a", sev="low")], [self._f("a", sev="high")])
+        assert gate(r, "regressed") is True
+
+    def test_gate_unknown_mode_raises(self):
+        from baseline_diff import gate
+        with pytest.raises(ValueError):
+            gate({"new": [], "new_high": [], "severity_regressions": []}, "bogus")
