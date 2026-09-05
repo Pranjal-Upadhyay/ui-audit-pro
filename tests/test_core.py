@@ -274,6 +274,80 @@ class TestAIDesignTropes:
         findings = self.checker._check_ai_design_tropes(data)
         assert len(findings) == 0
 
+    # --- Phase 4: richer AI-slop heuristics -------------------------------
+
+    def _text_data(self, texts):
+        return {
+            "computed_styles": {"colors": [], "font_families": []},
+            "dom_snapshots": {"https://x": {
+                "text_elements": [{"text": t} for t in texts]}},
+        }
+
+    def test_detects_decorative_emoji_overuse(self):
+        data = self._text_data(["✨ Fast", "🚀 Scale", "🔥 Ship", "💡 Smart", "🎯 Win"])
+        ids = [f["id"] for f in self.checker._check_ai_design_tropes(data)]
+        assert "ai-trope-emoji-decoration" in ids
+
+    def test_few_emoji_not_flagged(self):
+        data = self._text_data(["✨ Welcome", "Normal heading"])
+        ids = [f["id"] for f in self.checker._check_ai_design_tropes(data)]
+        assert "ai-trope-emoji-decoration" not in ids
+
+    def test_detects_placeholder_content(self):
+        data = self._text_data(["Lorem ipsum dolor sit amet", "john doe"])
+        findings = self.checker._check_ai_design_tropes(data)
+        ph = [f for f in findings if f["id"] == "ai-trope-placeholder-content"]
+        assert ph and ph[0]["severity"] == "medium"
+
+    def test_detects_generic_cta_overuse(self):
+        data = self._text_data(["Get Started", "Learn More", "Sign Up Free"])
+        ids = [f["id"] for f in self.checker._check_ai_design_tropes(data)]
+        assert "ai-trope-generic-cta" in ids
+
+    def test_two_ctas_not_flagged(self):
+        data = self._text_data(["Get Started", "Learn More"])
+        ids = [f["id"] for f in self.checker._check_ai_design_tropes(data)]
+        assert "ai-trope-generic-cta" not in ids
+
+    def test_wires_up_source_gradients_and_pill_badges(self):
+        data = {
+            "computed_styles": {"colors": [], "font_families": [], "ai_tropes": {
+                "ai_gradients": ["a.tsx", "b.tsx"],
+                "ai_pill_badges": ["hero.tsx"],
+            }},
+            "dom_snapshots": {},
+        }
+        ids = [f["id"] for f in self.checker._check_ai_design_tropes(data)]
+        assert "ai-trope-gradient-overuse" in ids
+        assert "ai-trope-pill-badges" in ids
+
+
+class TestScanTextSlop:
+    def setup_method(self):
+        from analyzers.consistency_checker import ConsistencyChecker
+        self.checker = ConsistencyChecker()
+
+    def test_counts_cliches_and_em_dashes(self):
+        r = self.checker._scan_text_slop(
+            ["Supercharge your team — effortlessly — today"])
+        assert "supercharge your" in r["cliches"]
+        assert "effortlessly" in r["cliches"]
+        assert r["em_dashes"] == 2
+
+    def test_cta_requires_short_standalone_label(self):
+        # 'get started' buried in a long sentence must NOT count as a CTA
+        r = self.checker._scan_text_slop(
+            ["Once you have configured everything you can get started with the API"])
+        assert r["ctas"] == []
+
+    def test_cta_matches_standalone_button_text(self):
+        r = self.checker._scan_text_slop(["Get Started"])
+        assert r["ctas"] == ["get started"]
+
+    def test_empty_and_none_safe(self):
+        r = self.checker._scan_text_slop(["", None, "hello"])
+        assert r["em_dashes"] == 0 and r["cliches"] == []
+
 
 
 class TestCheckRegistration:

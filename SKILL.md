@@ -271,7 +271,10 @@ Every audit produces a structured report with:
 - [ ] 21. Theming consistency (dark mode)
 - [ ] 22. Input affordance consistency
 - [ ] 23. Print/export/PDF view consistency
-- [ ] 24. AI design tropes & brand originality
+- [ ] 24. AI design tropes & brand originality — default indigo/slate palette,
+      font monoculture, marketing-cliché copy, em-dash & decorative-emoji
+      overuse, placeholder/lorem content, interchangeable generic CTAs, blur/
+      glassmorphism/gradient overuse, and "Introducing/Powered by AI" pill badges
 
 ### Integration Categories (13)
 - [ ] 1. API contract/schema drift

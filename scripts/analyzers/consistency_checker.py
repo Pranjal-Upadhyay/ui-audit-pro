@@ -9,6 +9,47 @@ import re
 from typing import Dict, List, Optional
 from collections import defaultdict
 
+# --- AI-slop lexicons (Phase 4) -------------------------------------------
+# Kept module-level so they're easy to extend and unit-test in isolation.
+
+# Generic LLM marketing/filler phrases. Curated to favour precision — each is a
+# phrase a human copywriter would rarely ship verbatim.
+AI_CLICHE_PHRASES = [
+    "supercharge your", "seamless integration", "elevate your",
+    "unlock the power", "unlock the full potential", "game-changer",
+    "tapestry of", "paradigm shift", "cutting-edge solution",
+    "revolutionize your", "take your", "to the next level",
+    "in today's fast-paced world", "in the world of", "look no further",
+    "harness the power", "whether you're", "designed to help you",
+    "effortlessly", "with just a few clicks", "the possibilities are endless",
+    "say goodbye to", "empower your", "at your fingertips",
+    "delve into", "navigating the", "it's important to note",
+    "when it comes to", "best-in-class", "one-stop shop",
+    "robust and scalable", "streamline your workflow",
+]
+
+# Decorative emoji that LLMs pepper through headings and bullet lists. Plain
+# functional emoji (✓, ✗) are intentionally excluded.
+DECORATIVE_EMOJI = ["✨", "🚀", "🔥", "💡", "🎯", "⚡", "🌟", "🎉", "👉", "💪",
+                    "🙌", "🤖", "📈", "💯", "🔑", "🎨", "🧠", "⭐"]
+
+# Placeholder / lorem content that signals an unfinished, un-personalised build.
+PLACEHOLDER_MARKERS = [
+    "lorem ipsum", "dolor sit amet", "john doe", "jane doe",
+    "example@example.com", "your company", "company name",
+    "your product", "product name", "your brand", "brand name",
+    "feature one", "feature two", "feature three", "lorem",
+    "placeholder text", "insert text here", "your text here",
+]
+
+# Interchangeable CTA labels. A page leaning on several of these has no
+# distinct voice — a hallmark of template output.
+GENERIC_CTA_LABELS = [
+    "get started", "learn more", "sign up free", "try it free",
+    "try it now", "start free trial", "get started for free",
+    "start now", "join now", "get started today", "explore now",
+]
+
 
 class ConsistencyChecker:
     """Runs UI/UX consistency checks against captured data."""
@@ -918,7 +959,11 @@ class ConsistencyChecker:
         - Font monoculture (100% Inter/Geist without brand headline pairing)
         - AI marketing copy clichés ("supercharge your workflow", "seamless integration", etc.)
         - Excessive em-dashes (—) in UI copy
-        - Overuse of radial blur overlays & translucent glassmorphism
+        - Decorative emoji overuse (✨🚀🔥…) in headings/copy
+        - Placeholder / lorem content still shipped in the UI
+        - Interchangeable generic CTA labels ("Get Started"/"Learn More")
+        - Overuse of radial blur overlays, glassmorphism, cliché gradients, and
+          "Introducing/Powered by AI" hero pill badges
         """
         findings = []
         styles = data.get("computed_styles", {})
@@ -960,16 +1005,9 @@ class ConsistencyChecker:
                 "effort": "small",
             })
 
-        # 3. AI Marketing Copy Clichés & Em-Dash Overuse
-        cliche_phrases = [
-            "supercharge your", "seamless integration", "elevate your",
-            "unlock the power", "game-changer", "tapestry of", "paradigm shift",
-            "cutting-edge solution", "revolutionize your"
-        ]
-        found_cliches = []
-        em_dash_count = 0
-
-        # Scan text in DOM snapshots or codebase
+        # 3. Text-level AI slop — clichés, em-dashes, decorative emoji,
+        #    placeholder/lorem content, interchangeable CTAs. Scanned in one
+        #    pass over rendered text (preferred) or source text (fallback).
         text_samples = []
         for url, snapshot in dom_snapshots.items():
             if isinstance(snapshot, dict):
@@ -990,41 +1028,77 @@ class ConsistencyChecker:
                     except (UnicodeDecodeError, OSError):
                         continue
 
-        for txt in text_samples:
-            em_dash_count += txt.count("—")
-            txt_lower = txt.lower()
-            for phrase in cliche_phrases:
-                if phrase in txt_lower:
-                    found_cliches.append(phrase)
+        slop = self._scan_text_slop(text_samples)
 
-        if found_cliches:
-            unique_cliches = sorted(set(found_cliches))
+        if slop["cliches"]:
+            unique_cliches = sorted(set(slop["cliches"]))
             findings.append({
                 "id": "ai-trope-microcopy-cliches",
                 "title": "AI copywriting clichés detected in UI text",
                 "category": "AI Design Tropes & Brand Originality",
                 "severity": "low",
-                "description": f"Found {len(found_cliches)} instance(s) of generic AI marketing copy: {unique_cliches}",
+                "description": f"Found {len(slop['cliches'])} instance(s) of generic AI marketing copy: {unique_cliches}",
                 "evidence": f"Clichés found: {unique_cliches}",
                 "recommended_fix": "Rewrite headline microcopy to focus on specific user outcomes rather than generic AI marketing buzzwords.",
                 "effort": "trivial",
             })
 
-        if em_dash_count > 5:
+        if slop["em_dashes"] > 5:
             findings.append({
                 "id": "ai-trope-em-dash-overuse",
                 "title": "Excessive em-dash (—) usage in UI text",
                 "category": "AI Design Tropes & Brand Originality",
                 "severity": "low",
-                "description": f"Found {em_dash_count} em-dashes across UI microcopy, a common hallmark of raw LLM text generation.",
-                "evidence": f"Em-dash count: {em_dash_count}",
+                "description": f"Found {slop['em_dashes']} em-dashes across UI microcopy, a common hallmark of raw LLM text generation.",
+                "evidence": f"Em-dash count: {slop['em_dashes']}",
                 "recommended_fix": "Vary sentence structure and split compound sentences to sound more natural.",
                 "effort": "trivial",
             })
 
-        # 4. Overused Visual Tropes (Blur Overlays, Glassmorphism)
+        if slop["emoji"] > 4:
+            emoji_list = sorted(set(slop["emoji_chars"]))
+            findings.append({
+                "id": "ai-trope-emoji-decoration",
+                "title": "Decorative emoji overuse in UI copy",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found {slop['emoji']} decorative emoji ({''.join(emoji_list)}) sprinkled through headings/copy — a common LLM output signature.",
+                "evidence": f"Decorative emoji: {''.join(emoji_list)} (count {slop['emoji']})",
+                "recommended_fix": "Reserve emoji for genuine functional cues; strip decorative sparkles/rockets from headings and body copy.",
+                "effort": "trivial",
+            })
+
+        if slop["placeholders"]:
+            unique_ph = sorted(set(slop["placeholders"]))
+            findings.append({
+                "id": "ai-trope-placeholder-content",
+                "title": "Placeholder / lorem content shipped in UI",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "medium",
+                "description": f"Found un-personalised placeholder content still in the UI: {unique_ph}. This signals an unfinished, generic build.",
+                "evidence": f"Placeholders found: {unique_ph}",
+                "recommended_fix": "Replace lorem ipsum and template names/emails with real brand-specific content before shipping.",
+                "effort": "small",
+            })
+
+        if len(set(slop["ctas"])) >= 3:
+            unique_ctas = sorted(set(slop["ctas"]))
+            findings.append({
+                "id": "ai-trope-generic-cta",
+                "title": "Interchangeable generic CTA labels",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"The UI leans on {len(unique_ctas)} generic, voiceless CTA labels: {unique_ctas}. Distinct products use action-specific verbs.",
+                "evidence": f"Generic CTAs: {unique_ctas}",
+                "recommended_fix": "Rewrite CTAs to name the specific action ('Start your 14-day trial', 'See pricing') instead of boilerplate 'Get Started'/'Learn More'.",
+                "effort": "trivial",
+            })
+
+        # 4. Overused Visual Tropes (Blur Overlays, Glassmorphism, gradients, pills)
         blur_overlays = ai_tropes.get("blur_overlays", [])
         glass_count = ai_tropes.get("glassmorphism_count", 0)
+        ai_gradients = ai_tropes.get("ai_gradients", [])
+        ai_pill_badges = ai_tropes.get("ai_pill_badges", [])
 
         if len(blur_overlays) > 2:
             findings.append({
@@ -1050,7 +1124,67 @@ class ConsistencyChecker:
                 "effort": "small",
             })
 
+        if len(ai_gradients) > 1:
+            findings.append({
+                "id": "ai-trope-gradient-overuse",
+                "title": "Cliché purple/indigo/cyan gradient overuse",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found the signature purple→pink / indigo→cyan AI gradient across {len(ai_gradients)} files: {ai_gradients[:5]}",
+                "evidence": f"Affected files: {ai_gradients[:5]}",
+                "recommended_fix": "Derive gradients from your brand palette, or use flat brand colors, instead of the default indigo/violet/cyan template gradient.",
+                "effort": "small",
+            })
+
+        if len(ai_pill_badges) > 0:
+            findings.append({
+                "id": "ai-trope-pill-badges",
+                "title": "\"Introducing / Powered by AI\" pill badge cliché",
+                "category": "AI Design Tropes & Brand Originality",
+                "severity": "low",
+                "description": f"Found the rounded-full 'Introducing…/✨ Powered by…/New' hero pill badge in {len(ai_pill_badges)} file(s): {ai_pill_badges[:5]}",
+                "evidence": f"Affected files: {ai_pill_badges[:5]}",
+                "recommended_fix": "Drop the decorative announcement pill above the hero headline, or replace it with a specific, dated announcement.",
+                "effort": "trivial",
+            })
+
         return findings
+
+    @staticmethod
+    def _scan_text_slop(text_samples: List[str]) -> Dict:
+        """Scan raw UI/source text for AI-slop signals (browser-free, testable).
+
+        Returns counts/lists for clichés, em-dashes, decorative emoji,
+        placeholder content, and generic CTA labels.
+        """
+        result = {
+            "cliches": [], "em_dashes": 0, "emoji": 0, "emoji_chars": [],
+            "placeholders": [], "ctas": [],
+        }
+        for txt in text_samples:
+            if not txt:
+                continue
+            result["em_dashes"] += txt.count("—")
+            lower = txt.lower()
+            for phrase in AI_CLICHE_PHRASES:
+                if phrase in lower:
+                    result["cliches"].append(phrase)
+            for ch in DECORATIVE_EMOJI:
+                n = txt.count(ch)
+                if n:
+                    result["emoji"] += n
+                    result["emoji_chars"].append(ch)
+            for marker in PLACEHOLDER_MARKERS:
+                if marker in lower:
+                    result["placeholders"].append(marker)
+            # CTAs: only count a short standalone label as a CTA, so body prose
+            # containing the words doesn't produce false positives.
+            stripped = lower.strip().strip(".!→>»")
+            if len(stripped) <= 30:
+                for cta in GENERIC_CTA_LABELS:
+                    if stripped == cta or stripped.startswith(cta):
+                        result["ctas"].append(cta)
+        return result
 
     @staticmethod
     def _slug(text: str, maxlen: int = 60) -> str:
