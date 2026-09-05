@@ -345,53 +345,98 @@ The same root cause produces multiple findings. Addressing the root cause resolv
 {chr(10).join(blocks)}"""
 
     def _diff_section(self) -> str:
+        """Coverage-aware diff vs. the previous run.
+
+        Delegates to the shared, unit-tested baseline_diff engine rather than
+        re-implementing set math. Crucially this is *coverage-aware*: a baseline
+        finding that's absent now is only reported RESOLVED if its check actually
+        re-ran — otherwise it's UNVERIFIED, so a coverage drop can't masquerade
+        as fixed issues. Failures are reported, never silently swallowed.
+        """
         if not self.previous_report:
             return ""
 
+        from baseline_diff import (
+            diff as bl_diff,
+            load_findings,
+            load_coverage,
+        )
+
+        prev_path = Path(self.previous_report)
+        prev_findings_path = prev_path.parent / "findings.json"
+        if not prev_findings_path.exists():
+            return ("## Report Diff (vs. Previous Run)\n\n"
+                    f"> ⚠ Could not diff: no `findings.json` next to the previous "
+                    f"report (`{prev_findings_path}`). Nothing compared.")
+
         try:
-            prev_path = Path(self.previous_report)
-            if not prev_path.exists():
-                return ""
+            baseline_findings = load_findings(prev_findings_path)
+            baseline_coverage = load_coverage(prev_findings_path)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            return ("## Report Diff (vs. Previous Run)\n\n"
+                    f"> ⚠ Could not diff against the previous run: {e}")
 
-            with open(prev_path) as f:
-                prev_content = f.read()
+        result = bl_diff(
+            baseline_findings,
+            self.findings,
+            baseline_coverage=baseline_coverage,
+            current_coverage=self.coverage or None,
+        )
 
-            # Parse previous findings if available
-            prev_findings_path = prev_path.parent / "findings.json"
-            if prev_findings_path.exists():
-                with open(prev_findings_path) as f:
-                    prev_findings = json.load(f)
-            else:
-                prev_findings = []
+        def _bullets(items, render):
+            return "\n".join(render(x) for x in items) if items else "- None"
 
-            # Compare
-            current_ids = {f.get("id", f.get("title")) for f in self.findings}
-            prev_ids = {f.get("id", f.get("title")) for f in prev_findings}
+        def _finding_line(f):
+            fid = f.get("id") or f.get("title") or "unknown"
+            return f"- `{fid}` [{f.get('severity', '?').upper()}] — {f.get('title', '')}"
 
-            new_issues = current_ids - prev_ids
-            resolved_issues = prev_ids - current_ids
-            persistent = current_ids & prev_ids
+        sections = [
+            "## Report Diff (vs. Previous Run)",
+            "",
+            "| Status | Count |",
+            "|--------|-------|",
+            f"| 🆕 New Issues | {len(result['new'])} (high/critical: {len(result['new_high'])}) |",
+            f"| ✅ Resolved | {len(result['resolved'])} |",
+            f"| ❓ Unverified (check skipped) | {len(result['unverified'])} |",
+            f"| ⏳ Persistent | {len(result['persistent'])} |",
+            f"| ⚠️ Severity Regressions | {len(result['severity_regressions'])} |",
+            "",
+            "### New Issues",
+            _bullets(result["new"], _finding_line),
+            "",
+            "### Resolved Issues",
+            _bullets(result["resolved"], _finding_line),
+        ]
 
-            new_items = "\n".join(f"- {nid}" for nid in new_issues) if new_issues else "- None"
-            resolved_items = "\n".join(f"- {rid}" for rid in resolved_issues) if resolved_issues else "- None"
-            persistent_items = f"{len(persistent)}" if persistent else "0"
+        if result["severity_regressions"]:
+            sections += [
+                "",
+                "### Severity Regressions (got worse)",
+                _bullets(result["severity_regressions"], _finding_line),
+            ]
 
-            return f"""## Report Diff (vs. Previous Run)
+        if result["unverified"]:
+            sections += [
+                "",
+                "### ⚠ Unverified — NOT counted as resolved",
+                "These baseline issues could not be re-checked because their "
+                "check was skipped this run:",
+                _bullets(
+                    result["unverified"],
+                    lambda f: f"- `{f.get('id') or f.get('title')}` — {f.get('category', '')}",
+                ),
+            ]
 
-| Status | Count |
-|--------|-------|
-| 🆕 New Issues | {len(new_issues)} |
-| ✅ Resolved | {len(resolved_issues)} |
-| ⏳ Persistent | {persistent_items} |
+        if result["coverage_regressed"]:
+            sections += [
+                "",
+                "### ⚠ Coverage Regressed vs. Baseline",
+                "Checks that ran in the baseline but were skipped this run "
+                "(the diff above is therefore partial):",
+                "\n".join(f"- {name}" for name in result["coverage_regressed"]),
+            ]
 
-### New Issues
-{new_items}
-
-### Resolved Issues
-{resolved_items}"""
-
-        except Exception:
-            return ""
+        return "\n".join(sections)
 
     def _appendix(self) -> str:
         routes = self.discovery.get("routes", [])

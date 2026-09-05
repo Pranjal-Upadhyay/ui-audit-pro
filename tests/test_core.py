@@ -770,3 +770,65 @@ class TestAccessibilityCheckConsumesAxe:
                  "title": "Image missing alt text", "fix": "add alt"}
         findings = c._check_accessibility(self._data(issue))
         assert findings[0]["severity"] == "high"  # impact critical -> high
+
+
+class TestReportDiffSection:
+    """Phase-2 follow-up: report _diff_section now uses the coverage-aware,
+    non-swallowing baseline_diff engine."""
+
+    def _gen(self, tmp_path, current_findings, current_coverage,
+             baseline_findings, baseline_coverage):
+        from report_generator import ReportGenerator
+        prev_dir = tmp_path / "prev"
+        prev_dir.mkdir()
+        (prev_dir / "findings.json").write_text(json.dumps(baseline_findings))
+        if baseline_coverage is not None:
+            (prev_dir / "coverage.json").write_text(json.dumps(baseline_coverage))
+        prev_report = prev_dir / "audit-report.md"
+        prev_report.write_text("# old report")
+        out = tmp_path / "cur"
+        out.mkdir()
+        return ReportGenerator(
+            findings=current_findings, discovery={}, output_dir=out,
+            previous_report=str(prev_report), coverage=current_coverage,
+        )
+
+    def _f(self, fid, sev="low", category="Cat A", title="t"):
+        return {"id": fid, "severity": sev, "category": category, "title": title}
+
+    def test_new_high_issue_rendered(self, tmp_path):
+        gen = self._gen(
+            tmp_path,
+            current_findings=[self._f("a"), self._f("b", sev="high")],
+            current_coverage={"executed": [], "skipped": []},
+            baseline_findings=[self._f("a")],
+            baseline_coverage={"executed": [], "skipped": []},
+        )
+        out = gen._diff_section()
+        assert "New Issues" in out
+        assert "`b`" in out and "HIGH" in out
+
+    def test_skipped_check_makes_gone_finding_unverified_not_resolved(self, tmp_path):
+        gen = self._gen(
+            tmp_path,
+            current_findings=[],  # 'a' is gone...
+            current_coverage={"skipped": [{"name": "Layout Integrity Bugs"}]},
+            baseline_findings=[self._f("a", category="Layout Integrity Bugs")],
+            baseline_coverage={"skipped": []},
+        )
+        out = gen._diff_section()
+        assert "Unverified" in out
+        assert "Coverage Regressed" in out
+        # must NOT be reported as resolved
+        assert "### Resolved Issues\n- None" in out
+
+    def test_missing_previous_findings_reports_visibly(self, tmp_path):
+        from report_generator import ReportGenerator
+        prev_dir = tmp_path / "prev"; prev_dir.mkdir()
+        prev_report = prev_dir / "audit-report.md"; prev_report.write_text("# old")
+        out = tmp_path / "cur"; out.mkdir()
+        gen = ReportGenerator(findings=[], discovery={}, output_dir=out,
+                              previous_report=str(prev_report), coverage={})
+        section = gen._diff_section()
+        assert section != ""  # not silently swallowed
+        assert "Could not diff" in section
