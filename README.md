@@ -4,12 +4,12 @@
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:6366f1,50:8b5cf6,100:06b6d4&amp;height=200&amp;section=header&amp;text=UI%20Audit%20Pro&amp;fontSize=70&amp;fontColor=ffffff&amp;animation=fadeIn&amp;fontAlignY=38&amp;desc=Two-layer%20UI%2FUX%20%26%20integration%20audit%20for%20any%20web%20app&amp;descSize=18&amp;descAlignY=60" alt="UI Audit Pro" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:6366f1,50:8b5cf6,100:06b6d4&amp;height=200&amp;section=header&amp;text=UI%20Audit%20Pro&amp;fontSize=70&amp;fontColor=ffffff&amp;animation=fadeIn&amp;fontAlignY=38&amp;desc=Two-layer%20UI%2FUX%20and%20integration%20audit%20for%20any%20web%20app&amp;descSize=18&amp;descAlignY=60" alt="UI Audit Pro" width="100%"/>
 
 <br/>
 
 <a href="https://github.com/Pranjal-Upadhyay/ui-audit-pro">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&amp;weight=600&amp;size=22&amp;duration=3000&amp;pause=800&amp;color=8B5CF6&amp;center=true&amp;vCenter=true&amp;width=720&amp;lines=37+automated+checks+across+two+layers;axe-core+accessibility+%E2%80%A2+WCAG+2.1+A%2FAA;Coverage-aware+CI+gate+%E2%80%A2+never+a+false+%22clean%22;Detects+AI+design+slop+%26+brand+originality" alt="Typing SVG" />
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&amp;weight=600&amp;size=22&amp;duration=3000&amp;pause=800&amp;color=8B5CF6&amp;center=true&amp;vCenter=true&amp;width=720&amp;lines=37+automated+checks+across+two+layers;axe-core+accessibility+%E2%80%A2+WCAG+2.1+A%2FAA;Coverage-aware+CI+gate+%E2%80%A2+never+a+false+%22clean%22;Detects+AI+design+slop+and+brand+originality" alt="Typing SVG" />
 </a>
 
 <br/><br/>
